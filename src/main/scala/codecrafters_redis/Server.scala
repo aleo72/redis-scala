@@ -15,7 +15,7 @@ object Server {
      serverSocket.bind(new InetSocketAddress("localhost", 6379))
      val clientSocket = serverSocket.accept() // wait for client
 
-    println("Server is running and waiting for a client to connect...")
+    log("Server is running and waiting for a client to connect...")
 
     val inputStream = clientSocket.getInputStream
     val outputStream: OutputStream = clientSocket.getOutputStream
@@ -24,23 +24,20 @@ object Server {
     val inputArray = new Array[Byte](1024) // 1 KB
     inputStream.read(inputArray)
     val inputString = new String(inputArray, StandardCharsets.UTF_8).trim
-    println(s"Received input: $inputString")
+    log(s"Received input: $inputString")
     // Process the input and send a response
-    inputString.split("\r\n").headOption match {
-      case Some(command) =>
-        println(s"Processing command: $command")
+    inputString.split("\r\n").foreach { command =>
+        log(s"Processing command: $command")
         // Call the function to process the command
         processCommand(command, outputStream)
-      case None =>
-        println("No command received.")
     }
 
 
     // Close the streams and socket
-    outputStream.close()
-    inputStream.close()
-    clientSocket.close()
-    serverSocket.close()
+//    outputStream.close()
+//    inputStream.close()
+//    clientSocket.close()
+//    serverSocket.close()
 
     println("Server has finished processing the request and is shutting down.")
   }
