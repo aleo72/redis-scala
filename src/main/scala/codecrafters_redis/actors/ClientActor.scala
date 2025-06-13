@@ -16,8 +16,11 @@ object ClientActor {
   sealed trait Response
 
   def props(clientSocket: Socket): Behavior[Command] =
-    Behaviors.setup { context =>
-      new ClientActor(context, clientSocket)
+    Behaviors.setup { ctx =>
+      ctx.log.info(
+        s"Creating ClientActor for client: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
+      )
+      new ClientActor(ctx, clientSocket)
     }
 }
 
@@ -27,6 +30,12 @@ class ClientActor(
 ) extends AbstractBehavior[ClientActor.Command](context) {
 
   import ClientActor._
+
+  context.log.info(
+    s"ClientActor created for client ${context.self.path}: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
+  )
+
+  context.self.tell(Command.Start)
 
   override def onSignal: PartialFunction[Signal, Behavior[Command]] = {
     case akka.actor.typed.PostStop =>

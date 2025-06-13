@@ -7,6 +7,15 @@ assembly / assemblyJarName := "redis.jar"
 
 val AkkaVersion = "2.10.6"
 
+
+import sbtassembly.AssemblyPlugin.autoImport._
+import sbtassembly.MergeStrategy
+
+assembly / assemblyMergeStrategy := {
+  case "module-info.class" => MergeStrategy.discard
+  case x => (assembly / assemblyMergeStrategy).value(x)
+}
+
 resolvers += "Akka library repository".at("https://repo.akka.io/maven")
 
 lazy val root = (project in file("."))
@@ -14,6 +23,7 @@ lazy val root = (project in file("."))
     name := "codecrafter-redis",
     // List your dependencies here
     libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % "1.5.6",
       "com.typesafe.akka" %% "akka-actor" % AkkaVersion,
 //      "com.typesafe.akka" %% "akka-cluster-tools" % AkkaVersion,
 //      "com.typesafe.akka" %% "akka-discovery" % AkkaVersion,

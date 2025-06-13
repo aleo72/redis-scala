@@ -12,6 +12,7 @@ object ServerActor {
   private case object AcceptNewClient extends Command
 
   def props(port: Int): Behavior[ServerActor.Command] = Behaviors.setup { ctx =>
+    ctx.log.info(s"Starting ServerActor on port $port")
     new ServerActor(ctx, port)
   }
 }
@@ -24,9 +25,11 @@ class ServerActor(context: ActorContext[ServerActor.Command], port: Int)
   private implicit val ec: ExecutionContext = context.system.executionContext
 
   context.self.tell(ServerActor.AcceptNewClient)
+  context.log.info(s"ServerActor is listening on port $port")
 
   override def onMessage(msg: Command): Behavior[Command] = msg match {
     case AcceptNewClient =>
+      context.log.info("Waiting for new client connections...")
       context.pipeToSelf(scala.concurrent.Future(serverSocket.accept())) {
         case scala.util.Success(clientSocket) =>
           context.log.info(
