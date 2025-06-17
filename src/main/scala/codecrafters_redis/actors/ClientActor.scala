@@ -2,7 +2,7 @@ package codecrafters_redis.actors
 
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
 import akka.actor.typed.{Behavior, Signal}
-import codecrafters_redis.logic.commands.{CommandDetectTrait, CommandHandler, Echo, Ping, Protocol, ProtocolMessage}
+import codecrafters_redis.commands.*
 import codecrafters_redis.util.RedisInputStream
 
 import java.io.{BufferedReader, Closeable, OutputStream}
@@ -13,6 +13,7 @@ object ClientActor {
   sealed trait Command
   object Command {
     case object Start extends Command
+    case object Stop extends Command
   }
 
   sealed trait Response
@@ -31,7 +32,7 @@ class ClientActor(
     val clientSocket: Socket
 ) extends AbstractBehavior[ClientActor.Command](context) {
 
-  import ClientActor._
+  import ClientActor.*
 
   context.log.info(
     s"ClientActor created for client ${context.self.path}: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
@@ -50,6 +51,9 @@ class ClientActor(
       case Command.Start =>
         startReadingClient()
         this // Return the same behavior after running
+      case Command.Stop =>
+        log("Received Stop command, stopping the actor.")
+        Behaviors.stopped
     }
 
   private def startReadingClient(): Unit = {
@@ -66,9 +70,15 @@ class ClientActor(
       Iterator
         .continually(Protocol.read(ris))
         .takeWhile(_ != null)
-        .foreach { command =>
-          context.log.info(s"Received command from client: $command")
-          processCommand(command, outputStream)
+        .foreach {
+          case Some(protocolMessage) =>
+            context.log.info(s"Received command from client: $protocolMessage")
+            processCommand(protocolMessage, outputStream)
+          case None =>
+            context.log.info("No more commands to read from client.")
+            closeStreams(outputStream, "OutputStream")
+            closeStreams(ris, "ClientInputStream")
+            context.self ! ClientActor.Command.Stop // Stop the actor
         }
     } finally {
       closeStreams(outputStream, "OutputStream")
@@ -98,26 +108,21 @@ class ClientActor(
     }
   }
 
-  private def processCommand(command: ProtocolMessage, out: OutputStream): Unit = {
+  private def processCommand(protocolMessage: ProtocolMessage, out: OutputStream): Unit = {
     // This function can be extended to handle more commands
-    log(s"Processing command: $command")
-
-    val commandHandlers: Seq[CommandDetectTrait & CommandHandler] = List(
-      Ping,
-      Echo
-    )
-
-    commandHandlers.find(_.canHandle(command)) match {
-      case Some(handler) =>
-        handler.handle(out)
+    log(s"Processing command: $protocolMessage")
+    RedisCommand.values.find(_.logic.canHandle(protocolMessage)) match {
+      case Some(redisCommand) =>
+        context.log.info(s"Handling command: ${redisCommand.toString}")
+        redisCommand.logic.handle(protocolMessage, out)
       case None =>
-        handleUnknownCommand(command, out)
+        handleUnknownCommand(protocolMessage, out)
     }
   }
 
-  def handleUnknownCommand(command: String, out: OutputStream): Unit = {
-    context.log.info(s"Unknown command: $command")
-    val response = s"-ERR unknown command '$command'\r\n"
+  def handleUnknownCommand(protocolMessage: ProtocolMessage, out: OutputStream): Unit = {
+    context.log.info(s"Unknown command: $protocolMessage")
+    val response = s"-ERR unknown command '$protocolMessage'\r\n"
 //    out.write(response.getBytes(StandardCharsets.UTF_8))
   }
 

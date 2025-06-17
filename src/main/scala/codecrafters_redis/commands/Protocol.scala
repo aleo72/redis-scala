@@ -1,15 +1,8 @@
-package codecrafters_redis.logic.commands
+package codecrafters_redis.commands
 
-import codecrafters_redis.exceptions.{
-  RedisAskDataException,
-  RedisBusyException,
-  RedisClusterException,
-  RedisInputStreamException,
-  RedisMovedDataException
-}
+import codecrafters_redis.commands.Protocol.Binary
+import codecrafters_redis.exceptions.*
 import codecrafters_redis.util.{RedisInputStream, SafeEncoder}
-
-import Protocol.Binary
 case class ProtocolMessage(
     statusCode: Option[Binary] = None,
     bulkMessage: Option[Binary] = None,
@@ -22,6 +15,12 @@ case class ProtocolMessage(
       s"multiBulkMessage=${multiBulkMessage.map(_.map(_.toString))}, " +
       s"integer=$integer)"
   }
+
+  def bulkMessageString: String =
+    bulkMessage.map(SafeEncoder.encode).getOrElse("")
+
+  def statusCodeString: String =
+    statusCode.map(SafeEncoder.encode).getOrElse("")
 }
 
 object Protocol {
@@ -71,7 +70,7 @@ object Protocol {
       case DOLLAR_BYTE   => processBulkReply(is)
       case ASTERISK_BYTE => processMultiBulkReply(is)
       case COLON_BYTE    => processInteger(is)
-      case MINUS_BYTE =>
+      case MINUS_BYTE    =>
         processError(is)
         None
       case _ =>
