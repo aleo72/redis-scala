@@ -9,5 +9,10 @@ trait CommandHandler {
 
   def stringToBytes(str: String): Array[Byte] =
     str.getBytes(StandardCharsets.UTF_8)
+  
+  def responseToBytes(response: String): Array[Byte] = {
+    val formattedResponse = response + "\r\n"
+    stringToBytes(formattedResponse)
+  }
 
 }

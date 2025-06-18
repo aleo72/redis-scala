@@ -1,57 +1,50 @@
 package codecrafters_redis.actors
 
 import akka.actor.typed.Behavior
-import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
+import akka.actor.typed.scaladsl.Behaviors
 
 import java.net.ServerSocket
 import java.util.UUID
 import scala.concurrent.ExecutionContext
+import scala.util.{Failure, Success}
 
 object ServerActor {
   sealed trait Command
   private case object AcceptNewClient extends Command
 
-  def props(port: Int): Behavior[ServerActor.Command] = Behaviors.setup { ctx =>
-    ctx.log.info(s"Starting ServerActor on port $port")
-    new ServerActor(ctx, port)
-  }
-}
+  def apply(port: Int): Behavior[Command] = Behaviors.setup { context =>
+    implicit val ec: ExecutionContext = context.system.executionContext
+    val serverSocket = new ServerSocket(port)
 
-class ServerActor(context: ActorContext[ServerActor.Command], port: Int)
-    extends AbstractBehavior[ServerActor.Command](context) {
-  import ServerActor._
+    context.log.info(s"Starting ServerActor on port $port")
 
-  private val serverSocket = new ServerSocket(port)
-  private implicit val ec: ExecutionContext = context.system.executionContext
+    def handleCommand(command: Command): Behavior[Command] = command match {
+      case AcceptNewClient =>
+        context.log.info("Waiting for new client connections...")
+        context.pipeToSelf(scala.concurrent.Future(serverSocket.accept())) {
+          case Success(clientSocket) =>
+            context.log.info(
+              s"Accepted new client connection from ${clientSocket.getInetAddress}"
+            )
+            val nameClient = s"client-${UUID.randomUUID()}"
+            context.log.info(s"Spawning ClientActor with name: $nameClient")
+            context.spawn(ClientActor.apply(clientSocket), nameClient)
+            AcceptNewClient
+          case Failure(exception) =>
+            context.log.error(s"Failed to accept client connection: $exception")
+            AcceptNewClient
+        }
+        Behaviors.same
+    }
 
-  context.self.tell(ServerActor.AcceptNewClient)
-  context.log.info(s"ServerActor is listening on port $port")
+    context.self ! AcceptNewClient
 
-  override def onMessage(msg: Command): Behavior[Command] = msg match {
-    case AcceptNewClient =>
-      context.log.info("Waiting for new client connections...")
-      context.pipeToSelf(scala.concurrent.Future(serverSocket.accept())) {
-        case scala.util.Success(clientSocket) =>
-          context.log.info(
-            s"Accepted new client connection from ${clientSocket.getInetAddress}"
-          )
-          val nameClient = s"client-${UUID.randomUUID()}"
-          context.log.info(s"Spawning ClientActor with name: $nameClient")
-          context.spawn(ClientActor.props(clientSocket), nameClient)
-          AcceptNewClient
-        case scala.util.Failure(exception) =>
-          context.log.error(s"Failed to accept client connection: $exception")
-          AcceptNewClient
+    Behaviors
+      .receiveMessage(handleCommand)
+      .receiveSignal { case (_, akka.actor.typed.PostStop) =>
+        context.log.info("ServerActor stopped, closing server socket.")
+        serverSocket.close()
+        Behaviors.stopped
       }
-      this
   }
-
-  override def onSignal
-      : PartialFunction[akka.actor.typed.Signal, Behavior[Command]] = {
-    case akka.actor.typed.PostStop =>
-      context.log.info("ServerActor stopped, closing server socket.")
-      serverSocket.close()
-      Behaviors.stopped
-  }
-
 }

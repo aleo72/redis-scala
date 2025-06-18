@@ -8,6 +8,7 @@ import codecrafters_redis.util.RedisInputStream
 import java.io.{BufferedReader, Closeable, OutputStream}
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import scala.concurrent.ExecutionContextExecutor
 
 object ClientActor {
   sealed trait Command
@@ -18,53 +19,41 @@ object ClientActor {
 
   sealed trait Response
 
-  def props(clientSocket: Socket): Behavior[Command] =
-    Behaviors.setup { ctx =>
-      ctx.log.info(
-        s"Creating ClientActor for client: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
-      )
-      new ClientActor(ctx, clientSocket)
-    }
-}
+  def apply(clientSocket: Socket): Behavior[Command] = Behaviors.setup { ctx =>
 
-class ClientActor(
-    context: ActorContext[ClientActor.Command],
-    val clientSocket: Socket
-) extends AbstractBehavior[ClientActor.Command](context) {
+    implicit val ec: ExecutionContextExecutor = ctx.system.executionContext
+    ctx.log.info(s"Creating ClientActor for client: ${clientSocket.getInetAddress}:${clientSocket.getPort}")
+    ctx.self ! Command.Start
 
-  import ClientActor.*
+    Behaviors
+      .receiveMessage[Command] {
+        case Command.Start =>
+          ctx.log.info("Starting to read commands from client...")
+          startReadingClient(clientSocket, Command.Start, ctx)
+          Behaviors.same
 
-  context.log.info(
-    s"ClientActor created for client ${context.self.path}: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
-  )
+        case Command.Stop =>
+          ctx.log.info("Received Stop command, stopping the actor.")
+          closeStreams(clientSocket, "ClientSocket", ctx)
+          Behaviors.stopped
+      }
+      .receiveSignal { case (_, akka.actor.typed.PostStop) =>
+        ctx.log
+          .info("ClientActor stopped, closing resources.")
+        closeStreams(clientSocket, "ClientSocket", ctx)
+        Behaviors.stopped
+      }
 
-  context.self.tell(Command.Start)
-
-  override def onSignal: PartialFunction[Signal, Behavior[Command]] = { case akka.actor.typed.PostStop =>
-    log("Client actor stopped, closing resources.")
-    closeStreams(clientSocket, "ClientSocket")
-    Behaviors.stopped
   }
 
-  override def onMessage(msg: Command): Behavior[Command] =
-    msg match {
-      case Command.Start =>
-        startReadingClient()
-        this // Return the same behavior after running
-      case Command.Stop =>
-        log("Received Stop command, stopping the actor.")
-        Behaviors.stopped
-    }
-
-  private def startReadingClient(): Unit = {
-    log(
-      s"Client connected: ${clientSocket.getInetAddress}:${clientSocket.getPort}"
-    )
+  private def startReadingClient(
+      clientSocket: Socket,
+      message: ClientActor.Command,
+      context: ActorContext[ClientActor.Command]
+  ) = {
     val outputStream: OutputStream = clientSocket.getOutputStream
     val ris = new RedisInputStream(clientSocket.getInputStream)
-
     try {
-
       context.log.info("Starting to read commands from client...")
 
       Iterator
@@ -73,17 +62,18 @@ class ClientActor(
         .foreach {
           case Some(protocolMessage) =>
             context.log.info(s"Received command from client: $protocolMessage")
-            processCommand(protocolMessage, outputStream)
+            processCommand(protocolMessage, outputStream, context)
           case None =>
             context.log.info("No more commands to read from client.")
-            closeStreams(outputStream, "OutputStream")
-            closeStreams(ris, "ClientInputStream")
+            closeStreams(outputStream, "OutputStream", context)
+            closeStreams(ris, "ClientInputStream", context)
             context.self ! ClientActor.Command.Stop // Stop the actor
         }
     } finally {
-      closeStreams(outputStream, "OutputStream")
-      closeStreams(ris, "ClientInputStream")
+      closeStreams(outputStream, "OutputStream", context)
+      closeStreams(ris, "ClientInputStream", context)
     }
+    Behaviors.same
   }
 
   private def createReader(inputStream: java.io.InputStream): BufferedReader =
@@ -91,39 +81,41 @@ class ClientActor(
       new java.io.InputStreamReader(inputStream, StandardCharsets.UTF_8)
     )
 
-  def log(message: String): Unit = {
-    // This function can be used to log messages
-    println(s"LOG: $message")
-  }
-
-  def closeStreams(s: Closeable, name: String): Unit = {
+  def closeStreams(s: Closeable, name: String, context: ActorContext[ClientActor.Command]): Unit = {
     try {
       if (s != null) {
         s.close()
-        log(s"$name closed successfully.")
+        context.log.info(s"$name closed successfully.")
       }
     } catch {
       case e: Exception =>
-        log(s"Error closing $name: ${e.getMessage}")
+        context.log.error(s"Error closing $name: ${e.getMessage}")
     }
   }
 
-  private def processCommand(protocolMessage: ProtocolMessage, out: OutputStream): Unit = {
+  private def processCommand(
+      protocolMessage: ProtocolMessage,
+      out: OutputStream,
+      context: ActorContext[ClientActor.Command]
+  ): Unit = {
     // This function can be extended to handle more commands
-    log(s"Processing command: $protocolMessage")
+    context.log.info(s"Processing command: $protocolMessage")
     RedisCommand.values.find(_.logic.canHandle(protocolMessage)) match {
       case Some(redisCommand) =>
         context.log.info(s"Handling command: ${redisCommand.toString}")
         redisCommand.logic.handle(protocolMessage, out)
       case None =>
-        handleUnknownCommand(protocolMessage, out)
+        handleUnknownCommand(protocolMessage, out, context)
     }
   }
 
-  def handleUnknownCommand(protocolMessage: ProtocolMessage, out: OutputStream): Unit = {
+  def handleUnknownCommand(
+      protocolMessage: ProtocolMessage,
+      out: OutputStream,
+      context: ActorContext[ClientActor.Command]
+  ): Unit = {
     context.log.info(s"Unknown command: $protocolMessage")
     val response = s"-ERR unknown command '$protocolMessage'\r\n"
-//    out.write(response.getBytes(StandardCharsets.UTF_8))
   }
 
 }

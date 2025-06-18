@@ -7,7 +7,7 @@ object Server {
   def main(args: Array[String]): Unit = {
     println("Logs from your program will appear here!")
 
-    val system = ActorSystem(ServerActor.props(6379), "RedisServerSystem")
+    val system = ActorSystem(ServerActor.apply(6379), "RedisServerSystem")
 
   }
 
