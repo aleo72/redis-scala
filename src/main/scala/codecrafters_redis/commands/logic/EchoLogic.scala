@@ -1,5 +1,7 @@
 package codecrafters_redis.commands.logic
 
+import akka.actor.typed.ActorRef
+import codecrafters_redis.actors.DatabaseActor
 import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ProtocolMessage}
 
 import java.io.OutputStream
@@ -8,7 +10,11 @@ object EchoLogic extends CommandDetectTrait with CommandHandler {
 
   override def commandName: String = "ECHO"
 
-  override def handle(command: ProtocolMessage, out: OutputStream): Unit = {
+  override def handle(
+      command: ProtocolMessage,
+      out: OutputStream,
+      databaseActor: ActorRef[DatabaseActor.Command]
+  ): Unit = {
     // Extract the message to echo from the command
     val message = command.multiBulkMessage.map(_.tail).map(_.map(_.bulkMessageString).mkString(" ")).getOrElse("")
     // Write the response to the output stream

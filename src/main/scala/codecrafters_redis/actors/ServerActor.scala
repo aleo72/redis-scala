@@ -1,6 +1,7 @@
 package codecrafters_redis.actors
 
 import akka.actor.typed.Behavior
+import akka.actor.typed.receptionist.Receptionist
 import akka.actor.typed.scaladsl.Behaviors
 
 import java.net.ServerSocket
@@ -17,6 +18,11 @@ object ServerActor {
     val serverSocket = new ServerSocket(port)
 
     context.log.info(s"Starting ServerActor on port $port")
+    val databaseActor = context.spawn(DatabaseActor(), "database-actor")
+
+//    context.system.receptionist ! Receptionist.Register(DatabaseActor.DatabaseKey, databaseActor)
+
+//    context.system.receptionist ! Receptionist.Find(DatabaseActor.DatabaseKey, context.self)
 
     def handleCommand(command: Command): Behavior[Command] = command match {
       case AcceptNewClient =>
@@ -28,7 +34,7 @@ object ServerActor {
             )
             val nameClient = s"client-${UUID.randomUUID()}"
             context.log.info(s"Spawning ClientActor with name: $nameClient")
-            context.spawn(ClientActor.apply(clientSocket), nameClient)
+            context.spawn(ClientActor.apply(clientSocket, databaseActor), nameClient)
             AcceptNewClient
           case Failure(exception) =>
             context.log.error(s"Failed to accept client connection: $exception")
