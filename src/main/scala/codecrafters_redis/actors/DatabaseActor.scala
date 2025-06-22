@@ -16,7 +16,7 @@ object DatabaseActor {
 
   sealed trait Response
   object Response {
-    case class Value(value: Option[String]) extends Response
+    case class Value(value: Option[Array[Byte]]) extends Response
     case object Cleared extends Response
     case object Ok extends Response
     case class Error(message: String) extends Response
@@ -28,7 +28,7 @@ object DatabaseActor {
     Behaviors.setup { ctx =>
       ctx.log.info("Creating DatabaseActor")
       Behaviors
-        .receiveMessage(handler(ctx, _, Map.empty[String, String]))
+        .receiveMessage(handler(ctx, _, Map.empty[String, Array[Byte]]))
         .receiveSignal { case (_, akka.actor.typed.PostStop) =>
           ctx.log.info("DatabaseActor stopped.")
           Behaviors.stopped
@@ -39,7 +39,7 @@ object DatabaseActor {
   def handler(
       context: ActorContext[CommandOrResponse],
       command: CommandOrResponse,
-      db: Map[String, String]
+      db: Map[String, Array[Byte]]
   ): Behavior[CommandOrResponse] =
     command match {
       case Command.Get(key, replyTo) =>

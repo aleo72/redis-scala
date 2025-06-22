@@ -92,6 +92,13 @@ object ClientActor {
           ctx.log.info("Received OK response from database actor.")
           queue.offer(ByteString("+OK\r\n"))
           buffer.unstashAll(idle(queue, dbActor, buffer))
+        case DatabaseActor.Response.Value(value) =>
+          ctx.log.info(s"Received Value response from database actor: $value")
+          value match {
+            case Some(v) => queue.offer(ByteString('+') ++ ByteString(v) ++ ByteString("\r\n"))
+            case None    => queue.offer(ByteString("$-1\r\n")) // nil response
+          }
+          buffer.unstashAll(idle(queue, dbActor, buffer))
         case Command.Disconnected =>
           ctx.log.info("Client disconnected, stopping actor.")
           queue.complete()

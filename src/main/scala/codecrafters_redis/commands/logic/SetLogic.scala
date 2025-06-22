@@ -21,14 +21,21 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
   ): ExpectedResponse = {
     // Extract the key and value from the command
     command.multiBulkMessage match {
-      case Some(multiBulk) if multiBulk.length >= 3 =>
+      case Some(Seq(_, keyM, valueM)) =>
+        val key = keyM.bulkMessageString
+        val value = valueM.bulkMessageString
+        log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
+        // Send the SET command to the database actor
+        databaseActor ! DatabaseActor.Command.Set(key, value, replyTo)
+        ExpectedResponse.ExpectedResponse
+      /* case Some(multiBulk) if multiBulk.length >= 3 =>
         val key = multiBulk(1).bulkMessageString
         val value = multiBulk(2).bulkMessageString
 
         log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
         // Send the SET command to the database actor
         databaseActor ! DatabaseActor.Command.Set(key, value, replyTo)
-        ExpectedResponse.ExpectedResponse
+        ExpectedResponse.ExpectedResponse*/
       case _ =>
         // If the command is malformed, send an error response
 //        out.write(responseToBytes("-ERR wrong number of arguments for 'set' command"))
