@@ -4,7 +4,7 @@ import akka.actor.typed.ActorRef
 import akka.stream.scaladsl.SourceQueueWithComplete
 import akka.util.ByteString
 import codecrafters_redis.actors.{ClientActor, DatabaseActor}
-import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ProtocolMessage}
+import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ExpectedResponse, ProtocolMessage}
 
 import java.io.OutputStream
 
@@ -18,7 +18,8 @@ object PingLogic extends CommandDetectTrait with CommandHandler {
       databaseActor: ActorRef[DatabaseActor.Command],
       replyTo: ActorRef[DatabaseActor.Response],
       log: org.slf4j.Logger
-  ): Unit = {
+  ): ExpectedResponse = {
     queue.offer(ByteString("+PONG\r\n"))
+    ExpectedResponse.NoResponse
   }
 }

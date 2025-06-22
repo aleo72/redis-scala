@@ -10,13 +10,14 @@ import java.nio.charset.StandardCharsets
 
 trait CommandHandler {
 
+  /* return true if no need to wait for a response from the database actor */
   def handle(
       command: ProtocolMessage,
       queue: SourceQueueWithComplete[ByteString],
       databaseActor: ActorRef[DatabaseActor.Command],
       replyTo: ActorRef[DatabaseActor.Response],
       log: org.slf4j.Logger
-  ): Unit
+  ): ExpectedResponse
 
   def stringToBytes(str: String): Array[Byte] =
     str.getBytes(StandardCharsets.UTF_8)

@@ -7,6 +7,7 @@ import codecrafters_redis.actors.{ClientActor, DatabaseActor}
 import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ProtocolMessage}
 
 import java.io.OutputStream
+import codecrafters_redis.commands.ExpectedResponse
 
 object EchoLogic extends CommandDetectTrait with CommandHandler {
 
@@ -18,11 +19,12 @@ object EchoLogic extends CommandDetectTrait with CommandHandler {
       databaseActor: ActorRef[DatabaseActor.Command],
       replyTo: ActorRef[DatabaseActor.Response],
       log: org.slf4j.Logger
-  ): Unit = {
+  ): ExpectedResponse = {
     // Extract the message to echo from the command
     val message = command.multiBulkMessage.map(_.tail).map(_.map(_.bulkMessageString).mkString(" ")).getOrElse("")
     // Write the response to the output stream
-//    out.write(responseToBytes(s"+$message"))
+    //    out.write(responseToBytes(s"+$message"))
     queue.offer(ByteString(s"+$message\r\n"))
+    ExpectedResponse.NoResponse
   }
 }
