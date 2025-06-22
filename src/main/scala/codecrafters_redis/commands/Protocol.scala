@@ -20,6 +20,9 @@ case class ProtocolMessage(
   def bulkMessageString: String =
     bulkMessage.map(SafeEncoder.encode).getOrElse("")
 
+  def bulkMessageLong: Option[Long] =
+    bulkMessage.map(SafeEncoder.encode).flatMap(_.toLongOption)
+
   def statusCodeString: String =
     statusCode.map(SafeEncoder.encode).getOrElse("")
 }

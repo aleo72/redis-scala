@@ -12,6 +12,8 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
 
   override def commandName: String = "SET"
 
+  val validParamsPXEX = Set("PX", "EX")
+
   override def handle(
       command: ProtocolMessage,
       queue: SourceQueueWithComplete[ByteString],
@@ -25,20 +27,36 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
         val key = keyM.bulkMessageString
         val value = valueM.bulkMessageString
         log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
-        // Send the SET command to the database actor
-        databaseActor ! DatabaseActor.Command.Set(key, valueM.bulkMessage, replyTo)
+        databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None, replyTo = replyTo)
         ExpectedResponse.ExpectedResponse
-      /* case Some(multiBulk) if multiBulk.length >= 3 =>
-        val key = multiBulk(1).bulkMessageString
-        val value = multiBulk(2).bulkMessageString
+      case Some(Seq(_, keyM, valueM, paramM, paramValueM)) if validParamsPXEX.contains(paramM.bulkMessageString.toUpperCase) =>
+        val key = keyM.bulkMessageString
+        val value = valueM.bulkMessageString
+        val param = paramM.bulkMessageString.toUpperCase
+        val pxValueString = paramValueM.bulkMessageString
 
-        log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
-        // Send the SET command to the database actor
-        databaseActor ! DatabaseActor.Command.Set(key, value, replyTo)
-        ExpectedResponse.ExpectedResponse*/
+        log.info(
+          s"Sending SET ($param) command to database actor ($databaseActor) with key: $key, value: $value, param: $param, pxValue: $pxValueString, with replyTo: $replyTo"
+        )
+
+        val maybePxValue: Option[Long] =
+          param match {
+            case "PX" => paramValueM.bulkMessageLong // Expecting milliseconds
+            case "EX" => paramValueM.bulkMessageLong.map(_ * 1000) // Convert seconds to milliseconds
+            case _    => None
+          }
+        maybePxValue match {
+          case pxOpt @ Some(pxValue) if pxValue >= 0 =>
+            databaseActor ! DatabaseActor.Command.Set(key, valueM.bulkMessage, pxOpt, replyTo)
+            ExpectedResponse.ExpectedResponse
+          case Some(pxValue) if pxValue < 0 =>
+            queue.offer(ByteString("-ERR value for 'px' or 'ex' parameter must be a non-negative integer\r\n"))
+            ExpectedResponse.NoResponse
+          case _ =>
+            queue.offer(ByteString("-ERR invalid value for 'px' or 'ex' parameter\r\n"))
+            ExpectedResponse.NoResponse
+        }
       case _ =>
-        // If the command is malformed, send an error response
-//        out.write(responseToBytes("-ERR wrong number of arguments for 'set' command"))
         queue.offer(ByteString("-ERR wrong number of arguments for 'set' command\r\n"))
         ExpectedResponse.NoResponse
     }
