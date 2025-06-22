@@ -11,7 +11,7 @@ object DatabaseActor {
 
   object Command {
     case class Get(key: String, replyTo: ActorRef[Response]) extends Command
-    case class Set(key: String, value: String, replyTo: ActorRef[Response]) extends Command
+    case class Set(key: String, value: Option[Array[Byte]], replyTo: ActorRef[Response]) extends Command
   }
 
   sealed trait Response
@@ -49,7 +49,7 @@ object DatabaseActor {
         Behaviors.same
       case Command.Set(key, value, replyTo) =>
         context.log.info(s"Setting value for key: $key")
-        val updatedDb = db + (key -> value)
+        val updatedDb = db + (key -> value.getOrElse(Array.empty[Byte]))
         context.log.info(s"Reply answer OK to $replyTo")
         replyTo ! Response.Ok
         Behaviors.receiveMessage { nextCommand =>

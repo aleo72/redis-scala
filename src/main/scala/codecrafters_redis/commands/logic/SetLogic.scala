@@ -26,7 +26,7 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
         val value = valueM.bulkMessageString
         log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
         // Send the SET command to the database actor
-        databaseActor ! DatabaseActor.Command.Set(key, value, replyTo)
+        databaseActor ! DatabaseActor.Command.Set(key, valueM.bulkMessage, replyTo)
         ExpectedResponse.ExpectedResponse
       /* case Some(multiBulk) if multiBulk.length >= 3 =>
         val key = multiBulk(1).bulkMessageString
