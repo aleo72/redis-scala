@@ -1,7 +1,9 @@
 package codecrafters_redis.commands.logic
 
 import akka.actor.typed.ActorRef
-import codecrafters_redis.actors.DatabaseActor
+import akka.stream.scaladsl.SourceQueueWithComplete
+import akka.util.ByteString
+import codecrafters_redis.actors.{ClientActor, DatabaseActor}
 import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ProtocolMessage}
 
 import java.io.OutputStream
@@ -12,12 +14,15 @@ object EchoLogic extends CommandDetectTrait with CommandHandler {
 
   override def handle(
       command: ProtocolMessage,
-      out: OutputStream,
-      databaseActor: ActorRef[DatabaseActor.Command]
+      queue: SourceQueueWithComplete[ByteString],
+      databaseActor: ActorRef[DatabaseActor.Command],
+      replyTo: ActorRef[DatabaseActor.Response],
+      log: org.slf4j.Logger
   ): Unit = {
     // Extract the message to echo from the command
     val message = command.multiBulkMessage.map(_.tail).map(_.map(_.bulkMessageString).mkString(" ")).getOrElse("")
     // Write the response to the output stream
-    out.write(responseToBytes(s"+$message"))
+//    out.write(responseToBytes(s"+$message"))
+    queue.offer(ByteString(s"+$message\r\n"))
   }
 }

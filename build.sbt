@@ -1,19 +1,18 @@
-ThisBuild / scalaVersion     := "3.7.1"
-ThisBuild / version          := "0.1.0-SNAPSHOT"
-ThisBuild / organization     := "com.codecrafters"
+ThisBuild / scalaVersion := "3.7.1"
+ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / organization := "com.codecrafters"
 ThisBuild / organizationName := "CodeCrafters"
 
 assembly / assemblyJarName := "redis.jar"
 
 val AkkaVersion = "2.10.6"
 
-
 import sbtassembly.AssemblyPlugin.autoImport._
 import sbtassembly.MergeStrategy
 
 assembly / assemblyMergeStrategy := {
   case "module-info.class" => MergeStrategy.discard
-  case x => (assembly / assemblyMergeStrategy).value(x)
+  case x                   => (assembly / assemblyMergeStrategy).value(x)
 }
 
 resolvers += "Akka library repository".at("https://repo.akka.io/maven")
@@ -39,7 +38,7 @@ lazy val root = (project in file("."))
       "com.typesafe.akka" %% "akka-slf4j" % AkkaVersion,
 //      "com.typesafe.akka" %% "akka-stream" % AkkaVersion % Test,
 //      "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion,
-//      "com.typesafe.akka" %% "akka-stream-typed" % AkkaVersion,
+      "com.typesafe.akka" %% "akka-stream-typed" % AkkaVersion,
 //      "com.typesafe.akka" %% "akka-testkit" % AkkaVersion,
       "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion
 //      "com.typesafe.akka" %% "akka-coordination" % AkkaVersion,

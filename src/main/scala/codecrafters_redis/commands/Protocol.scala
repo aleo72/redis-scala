@@ -3,6 +3,7 @@ package codecrafters_redis.commands
 import codecrafters_redis.commands.Protocol.Binary
 import codecrafters_redis.exceptions.*
 import codecrafters_redis.util.{RedisInputStream, SafeEncoder}
+import akka.util.ByteString
 case class ProtocolMessage(
     statusCode: Option[Binary] = None,
     bulkMessage: Option[Binary] = None,
@@ -50,20 +51,21 @@ object Protocol {
   private val WRONGPASS_PREFIX = "WRONGPASS"
   private val NOPERM_PREFIX = "NOPERM"
 
-  def read(is: RedisInputStream): Option[ProtocolMessage] = {
-//    is.readLine() match {
-//      case null => throw new IllegalArgumentException("Input stream is null")
-//      case line if line.startsWith("*") => readArray(is, line)
-//      case line if line.startsWith("$") => readBulkString(is, line)
-//      case line if line.startsWith(":") => readInteger(line)
-//      case line if line.startsWith("+") => readSimpleString(line)
-//      case line if line.startsWith("-") => readError(line)
-//      case _ => throw new IllegalArgumentException(s"Unknown protocol format: $line")
-//    }
-    process(is)
+  def read(is: RedisInputStream): Option[ProtocolMessage] = process(is)
+
+  def read(is: ByteString): Option[ProtocolMessage] = {
+    val redisInputStream = new RedisInputStream(new java.io.ByteArrayInputStream(is.toArray), is.length)
+    try {
+      process(redisInputStream)
+    } catch {
+      case e: RedisInputStreamException =>
+        throw new IllegalArgumentException("Error reading from RedisInputStream", e)
+    } finally {
+      redisInputStream.close()
+    }
   }
 
-  def process(is: RedisInputStream): Option[ProtocolMessage] = {
+  private def process(is: RedisInputStream): Option[ProtocolMessage] = {
     val b = is.readByte()
     b match {
       case PLUS_BYTE     => processStatusCodeReply(is)
