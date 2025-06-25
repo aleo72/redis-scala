@@ -105,11 +105,11 @@ object ClientActor {
             values
               .map(v => ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n"))
               .foldLeft(
-                if (values.isEmpty) ByteString("$-1\r\n")
+                if (values.isEmpty) ByteString("*0\r\n")
                 else if (values.length == 1) ByteString.empty
                 else ByteString("*") ++ ByteString(values.length.toString) ++ ByteString("\r\n")
               )(_ ++ _)
-
+          ctx.log.info(s"Bulk string response: ${bulkStringResponse.utf8String.trim}")
           queue.offer(ByteString(bulkStringResponse))
           buffer.unstashAll(idle(queue, dbActor, buffer))
         case Command.Disconnected =>

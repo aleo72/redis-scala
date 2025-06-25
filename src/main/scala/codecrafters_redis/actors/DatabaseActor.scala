@@ -6,7 +6,7 @@ import codecrafters_redis.CmdArgConfig
 
 import scala.collection.immutable.Map
 
-object DatabaseActor {
+object DatabaseActor extends database.KeysTrait {
 
   val DatabaseKey = akka.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
@@ -15,6 +15,7 @@ object DatabaseActor {
   object Command {
     case class Get(key: String, replyTo: ActorRef[Response]) extends Command
     case class Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response]) extends Command
+    case class Keys(pattern: String, replyTo: ActorRef[Response]) extends Command
     case class Config(
         get: Option[String],
         set: Option[(String, String)],
@@ -54,6 +55,7 @@ object DatabaseActor {
         case cmd: Command.Get    => handlerGET(cmd, db, cmdArgConfig, context)
         case cmd: Command.Set    => handlerSET(cmd, db, cmdArgConfig, context)
         case cmd: Command.Config => handlerConfig(cmd, db, cmdArgConfig, context)
+        case cmd: Command.Keys   => handlerKeys(cmd, db, cmdArgConfig, context)
 
       }
     }
