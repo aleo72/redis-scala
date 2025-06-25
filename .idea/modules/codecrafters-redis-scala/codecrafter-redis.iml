@@ -17,6 +17,7 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" name="sbt: scala-sdk-3.7.1" level="project" />
     <orderEntry type="library" name="sbt: org.scala-lang:scala3-library_3:3.7.1:jar" level="project" />
+    <orderEntry type="library" name="sbt: com.github.scopt:scopt_3:4.1.0:jar" level="project" />
     <orderEntry type="library" name="sbt: ch.qos.logback:logback-classic:1.5.6:jar" level="project" />
     <orderEntry type="library" name="sbt: com.typesafe.akka:akka-actor_3:2.10.6:jar" level="project" />
     <orderEntry type="library" name="sbt: com.typesafe.akka:akka-slf4j_3:2.10.6:jar" level="project" />

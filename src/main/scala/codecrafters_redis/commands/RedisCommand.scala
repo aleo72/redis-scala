@@ -9,3 +9,4 @@ enum RedisCommand(val logic: CommandDetectTrait & CommandHandler):
   case Echo extends RedisCommand(EchoLogic)
   case Set extends RedisCommand(SetLogic)
   case Get extends RedisCommand(GetLogic)
+  case Config extends RedisCommand(ConfigLogic)

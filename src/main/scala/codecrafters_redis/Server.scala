@@ -7,7 +7,9 @@ object Server {
   def main(args: Array[String]): Unit = {
     println("Logs from your program will appear here!")
 
-    val system = ActorSystem(ServerActor.apply(6379), "RedisServerSystem")
+    val cmdArgConfig = CmdArgConfigParser.parse(args)
+    println(s"Starting Redis server with configuration: $cmdArgConfig")
+    val system = ActorSystem(ServerActor(cmdArgConfig), "RedisServerSystem")
 
   }
 

@@ -99,6 +99,19 @@ object ClientActor {
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
           buffer.unstashAll(idle(queue, dbActor, buffer))
+        case DatabaseActor.Response.ValueBulkString(values) =>
+          ctx.log.info("Received ValueBulkString response from database actor.")
+          val bulkStringResponse: ByteString =
+            values
+              .map(v => ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n"))
+              .foldLeft(
+                if (values.isEmpty) ByteString("$-1\r\n")
+                else if (values.length == 1) ByteString.empty
+                else ByteString("*") ++ ByteString(values.length.toString) ++ ByteString("\r\n")
+              )(_ ++ _)
+
+          queue.offer(ByteString(bulkStringResponse))
+          buffer.unstashAll(idle(queue, dbActor, buffer))
         case Command.Disconnected =>
           ctx.log.info("Client disconnected, stopping actor.")
           queue.complete()
