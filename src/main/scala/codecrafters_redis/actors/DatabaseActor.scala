@@ -1,7 +1,7 @@
 package codecrafters_redis.actors
 
 import akka.NotUsed
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.stream.IOResult
 import codecrafters_redis.CmdArgConfig
@@ -11,50 +11,67 @@ import akka.util.ByteString
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
+import scala.util.{Failure, Success}
 import scala.collection.immutable.Map
 
 object DatabaseActor extends database.KeysTrait {
 
   val DatabaseKey = akka.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
-  sealed trait Command
+  enum InternalCommand:
+    case InitializationSuccess(db: Database)
+    case InitializationFailure(exception: Throwable)
 
-  object Command {
-    case class Get(key: String, replyTo: ActorRef[Response]) extends Command
-    case class Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response]) extends Command
-    case class Keys(pattern: String, replyTo: ActorRef[Response]) extends Command
-    case class Config(
-        get: Option[String],
-        set: Option[(String, String)],
-        replyTo: ActorRef[Response]
-    ) extends Command
-  }
+  enum Command:
+    case Get(key: String, replyTo: ActorRef[Response])
+    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response])
+    case Keys(pattern: String, replyTo: ActorRef[Response])
+    case Config(get: Option[String], set: Option[(String, String)], replyTo: ActorRef[Response])
 
-  sealed trait Response
-  object Response {
-    case class Value(value: Option[Array[Byte]]) extends Response
-    case class ValueBulkString(values: Seq[Array[Byte]]) extends Response
-    case object Cleared extends Response
-    case object Ok extends Response
-    case class Error(message: String) extends Response
-  }
+  enum Response:
+    case Value(value: Option[Array[Byte]])
+    case ValueBulkString(values: Seq[Array[Byte]])
+    case Cleared
+    case Ok
+    case Error(message: String)
 
-  type CommandOrResponse = Command
+  type CommandOrResponse = Command | InternalCommand
+
   type Database = Map[String, (Array[Byte], Option[Long])]
 
   def apply(cmdArgConfig: CmdArgConfig): Behavior[CommandOrResponse] =
     Behaviors.setup { ctx =>
       ctx.log.info("Creating DatabaseActor")
-      val dbFuture = loadRdbFile(cmdArgConfig)(using ctx)
-
-      dbFuture.map { db =>
-        handler(db, cmdArgConfig)
-          .receiveSignal { case (_, akka.actor.typed.PostStop) =>
-            ctx.log.info("DatabaseActor stopped.")
-            Behaviors.stopped
-          }
+      Behaviors.withStash(1000) { buffer =>
+        val dbFuture = loadRdbFile(cmdArgConfig)(using ctx)
+        ctx.pipeToSelf(dbFuture) {
+          case Success(db)        => InternalCommand.InitializationSuccess(db)
+          case Failure(exception) => InternalCommand.InitializationFailure(exception)
+        }
+        initializing(buffer, cmdArgConfig)
       }
+    }
 
+  def initializing(
+      buffer: StashBuffer[CommandOrResponse],
+      cmdArgConfig: CmdArgConfig
+  ): Behavior[CommandOrResponse] =
+    Behaviors.receive { (ctx: ActorContext[CommandOrResponse], message: CommandOrResponse) =>
+      message match {
+        case InternalCommand.InitializationSuccess(db) =>
+          ctx.log.info("Database initialized successfully.")
+          val behavior: Behavior[CommandOrResponse] = handler(db, cmdArgConfig)
+          buffer.unstashAll(behavior)
+
+        case InternalCommand.InitializationFailure(exception) =>
+          ctx.log.error(s"Failed to initialize database: ${exception.getMessage}")
+          Behaviors.stopped
+
+        case msg: CommandOrResponse =>
+          ctx.log.warn("Received unexpected message during initialization.")
+          buffer.stash(msg)
+          Behaviors.same
+      }
     }
 
   def handler(
@@ -67,7 +84,6 @@ object DatabaseActor extends database.KeysTrait {
         case cmd: Command.Set    => handlerSET(cmd, db, cmdArgConfig, context)
         case cmd: Command.Config => handlerConfig(cmd, db, cmdArgConfig, context)
         case cmd: Command.Keys   => handlerKeys(cmd, db, cmdArgConfig, context)
-
       }
     }
 
