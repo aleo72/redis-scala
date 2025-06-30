@@ -129,14 +129,10 @@ object RedisRdbFile {
       val opCode: Int = state.buffer.head.toInt & 0xff // Convert to unsigned int
       val bufferAfterOpCode: ByteString = state.buffer.drop(1)
 
-      val rdbOpCode = RdbOpCode.values.find(_.code == opCode).getOrElse {
-        throw new RuntimeException(s"Unknown RDB opcode: $opCode")
-      }
-
-      rdbOpCode match {
-        case EOF =>
+      opCode match {
+        case EOF.code =>
           (state.consume(1, Finished), None, false) // End of file, transition to Finished phase
-        case SELECT_DB =>
+        case SELECT_DB.code =>
           ParsedLength.parse(state.buffer.drop(1)) match {
             case None         => (state, None, false) // Not enough data to read the DB number
             case Some(length) =>
@@ -147,7 +143,7 @@ object RedisRdbFile {
                 .copy(currentDb = dbNumber, nextExpiry = None)
               (newState, None, true) // Successfully parsed SELECT_DB
           }
-        case EXPIRETIME_MS =>
+        case EXPIRETIME_MS.code =>
           if (bufferAfterOpCode.length < 9) {
             (state, None, false) // Not enough data to read the expiry time, 8 bytes needed for Long
           } else {
@@ -159,7 +155,7 @@ object RedisRdbFile {
               )
             (newState, None, true) // Successfully parsed EXPIRETIME_MS
           }
-        case EXPIRETIME =>
+        case EXPIRETIME.code =>
           if (bufferAfterOpCode.length < 4) {
             (state, None, false) // Not enough data to read the expiry time, 4 bytes needed for Int
           } else {
@@ -171,22 +167,52 @@ object RedisRdbFile {
               )
             (newState, None, true) // Successfully parsed EXPIRETIME
           }
-        case RESIZE_DB | AUX =>
-          // this optcode for reading AUX or RESIZEDB and in both cases we need to read a string
-          // TODO: handle RESIZEDB properly if needed
-          parseString(bufferAfterOpCode).map(_._2).flatMap(parseString) match {
-            case None =>
-              (state, None, false) // Not enough data to read the AUX or RESIZEDB value
-            case Some((value, remainingBuffer)) =>
-              val newState = state.copy(
-                phase = ReadingOpCode,
-                buffer = remainingBuffer
-              )
-              (newState, None, true) // Successfully parsed AUX or RESIZEDB
+        case RESIZE_DB.code | AUX.code =>
+          // --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+          // AUX/RESIZE_DB - это пара ключ-значение, которую нужно пропустить.
+          // 1. Пропускаем ключ (это всегда строка).
+          parseString(bufferAfterOpCode) match {
+            case None                      => (state, None, false)
+            case Some((_, bufferAfterKey)) =>
+              // 2. Пропускаем значение (может быть любым типом).
+              skipValue(bufferAfterKey) match {
+                case None                   => (state, None, false)
+                case Some(bufferAfterValue) =>
+                  val bytesConsumed = state.buffer.length - bufferAfterValue.length
+                  (state.consume(bytesConsumed, ReadingOpCode), None, true)
+              }
           }
         case valueTypeCodee =>
-          (state.copy(phase = ReadingKeyValuePair(valueTypeCodee.code), buffer = bufferAfterOpCode), None, true) // Proceed to read key-value pair
+          (state.copy(phase = ReadingKeyValuePair(valueTypeCodee), buffer = bufferAfterOpCode), None, true) // Proceed to read key-value pair
 
       }
     }
+
+  private def skipValue(buffer: ByteString): Option[ByteString] = {
+    if (buffer.isEmpty) return None
+    val valueTypeCode = buffer.head.toInt & 0xff
+    val bufferAfterType = buffer.drop(1)
+
+    valueTypeCode match {
+      case code if (code >> 6) != 0x03 => // Обычная строка
+        ParsedLength.parse(buffer).flatMap { len =>
+          val bytesToSkip = len.value + len.consumeBytes
+          if (buffer.length >= bytesToSkip) Some(buffer.drop(bytesToSkip)) else None
+        }
+      case ENC_INT8.code  => if (bufferAfterType.length >= 1) Some(bufferAfterType.drop(1)) else None
+      case ENC_INT16.code => if (bufferAfterType.length >= 2) Some(bufferAfterType.drop(2)) else None
+      case ENC_INT32.code => if (bufferAfterType.length >= 4) Some(bufferAfterType.drop(4)) else None
+      case MODULE.code    => throw new RuntimeException("MODULE type not implemented yet")
+      case MODULE_2.code  => throw new RuntimeException("MODULE_2 type not implemented yet")
+      case ENC_LZF.code   => // Пропуск сжатой строки
+        for {
+          compLen <- ParsedLength.parse(bufferAfterType)
+          uncompLen <- ParsedLength.parse(bufferAfterType.drop(compLen.consumeBytes))
+          headerLen = compLen.consumeBytes + uncompLen.consumeBytes
+          bytesToSkip = headerLen + compLen.value
+          result <- if (bufferAfterType.length >= bytesToSkip) Some(bufferAfterType.drop(bytesToSkip)) else None
+        } yield result
+      case _ => throw new RuntimeException(s"Cannot skip unknown value type 0x${valueTypeCode.toHexString}")
+    }
+  }
 }

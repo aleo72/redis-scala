@@ -13,6 +13,8 @@ enum RdbOpCode(val code: Int):
   case SET extends RdbOpCode(0x02)
   case ZSET extends RdbOpCode(0x03)
   case HASH extends RdbOpCode(0x04)
+  case MODULE extends RdbOpCode(0x05)
+  case MODULE_2 extends RdbOpCode(0x06)
 
   case ENC_INT8 extends RdbOpCode(0xc0)
   case ENC_INT16 extends RdbOpCode(0xc1)
