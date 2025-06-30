@@ -13,3 +13,8 @@ enum RdbOpCode(val code: Int):
   case SET extends RdbOpCode(0x02)
   case ZSET extends RdbOpCode(0x03)
   case HASH extends RdbOpCode(0x04)
+
+  case ENC_INT8 extends RdbOpCode(0xc0)
+  case ENC_INT16 extends RdbOpCode(0xc1)
+  case ENC_INT32 extends RdbOpCode(0xc2)
+  case ENC_LZF extends RdbOpCode(0xc3) // LZF compressed string

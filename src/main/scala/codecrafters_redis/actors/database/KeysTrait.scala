@@ -1,7 +1,7 @@
 package codecrafters_redis.actors.database
 
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import akka.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import codecrafters_redis.CmdArgConfig
 import codecrafters_redis.actors.DatabaseActor
 import codecrafters_redis.actors.DatabaseActor.*

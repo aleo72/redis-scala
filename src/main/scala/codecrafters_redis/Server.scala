@@ -1,6 +1,6 @@
 package codecrafters_redis
 
-import akka.actor.typed.ActorSystem
+import org.apache.pekko.actor.typed.ActorSystem
 import codecrafters_redis.actors.ServerActor
 
 object Server {

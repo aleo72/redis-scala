@@ -3,7 +3,7 @@ package codecrafters_redis.commands
 import codecrafters_redis.commands.Protocol.Binary
 import codecrafters_redis.exceptions.*
 import codecrafters_redis.util.{RedisInputStream, SafeEncoder}
-import akka.util.ByteString
+import org.apache.pekko.util.ByteString
 case class ProtocolMessage(
     statusCode: Option[Binary] = None,
     bulkMessage: Option[Binary] = None,

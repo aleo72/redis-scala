@@ -1,17 +1,18 @@
 package codecrafters_redis.rdb
 
-import akka.stream.scaladsl.Flow
-import akka.util.ByteString
 import codecrafters_redis.rdb.ParsingPhase.*
 import codecrafters_redis.rdb.RdbOpCode.*
+import org.apache.pekko.stream.scaladsl.Flow
+import org.apache.pekko.util.ByteString
 
 import java.nio.ByteOrder
+import scala.util.control.NonFatal
 
 object RedisRdbFile {
 
   private type ParsingIntermediateResult = (ParserState, Option[RedisKeyValue], Boolean)
 
-  def rdbParserFlow(): Flow[ByteString, RedisKeyValue, akka.NotUsed] =
+  def rdbParserFlow(): Flow[ByteString, RedisKeyValue, org.apache.pekko.NotUsed] =
     Flow[ByteString].statefulMapConcat { () =>
       var state = ParserState()
 
@@ -20,10 +21,18 @@ object RedisRdbFile {
         var results = Vector.empty[RedisKeyValue]
         var continueParsing = true
         while (continueParsing) {
-          val (newState, result, canContinue) = runParserStep(state)
-          state = newState
-          result.foreach(results :+= _)
-          continueParsing = canContinue
+          try {
+            val (newState, result, canContinue) = runParserStep(state)
+            state = newState
+            result.foreach(results :+= _)
+            continueParsing = canContinue
+          } catch {
+            case NonFatal(e) =>
+              println(s"!!! PARSING FAILED at offset ~${state.bytesConsumed} !!!")
+              println(s"    Error: ${e.getMessage}")
+              println(s"    Buffer (first 32 bytes): ${state.buffer.take(32).map(b => f"$b%02X").mkString(" ")}")
+              throw e // Останавливаем поток
+          }
         }
         results
       }
@@ -39,43 +48,61 @@ object RedisRdbFile {
 
   private def parseKeyValuePair(state: ParserState, valueTypeCodee: Int) = {
     val keyOpt = parseString(state.buffer)
+    println(s"Parsing key-value pair with value type code: $valueTypeCodee, current state: $state, keyOpt: ${keyOpt.map(_._1.utf8String).getOrElse("None")}")
     keyOpt match {
-      case None                         => (state, None, false) // Not enough data to read the key
-      case Some((key, remainingBuffer)) =>
-        val valueOpt = valueTypeCodee match {
-          case RdbOpCode.STRING.code => parseString(remainingBuffer)
-          case RdbOpCode.LIST.code   => throw new RuntimeException("LIST type not implemented yet")
-          case RdbOpCode.SET.code    => throw new RuntimeException("SET type not implemented yet")
-          case RdbOpCode.ZSET.code   => throw new RuntimeException("ZSET type not implemented yet")
-          case RdbOpCode.HASH.code   => throw new RuntimeException("HASH type not implemented yet")
-          case _                     => None // Handle other value types
+      case None                => (state, None, false) // Not enough data to read the key
+      case Some((key, buffer)) =>
+        import RdbOpCode.*
+        val valueResultOpt = valueTypeCodee match {
+          case STRING.code    => parseString(buffer).map((value, bufferAfterValue) => RdbValue.RdbString(value.utf8String) -> bufferAfterValue)
+          case ENC_INT8.code  => parseEncodedInteger(buffer, 1).map((value, bufferAfterValue) => RdbValue.RdbInt(value) -> bufferAfterValue)
+          case ENC_INT16.code => parseEncodedInteger(buffer, 2).map((value, bufferAfterValue) => RdbValue.RdbInt(value) -> bufferAfterValue)
+          case ENC_INT32.code => parseEncodedInteger(buffer, 4).map((value, bufferAfterValue) => RdbValue.RdbInt(value) -> bufferAfterValue)
+          case LIST.code      => throw new RuntimeException("LIST type not implemented yet")
+          case SET.code       => throw new RuntimeException("SET type not implemented yet")
+          case ZSET.code      => throw new RuntimeException("ZSET type not implemented yet")
+          case HASH.code      => throw new RuntimeException("HASH type not implemented yet")
+          case _              => throw new RuntimeException(s"Value type code $valueTypeCodee is not supported")
         }
-        valueOpt match {
+        valueResultOpt match {
           case None                            => (state, None, false) // Not enough data to read the value
           case Some((value, bufferAfterValue)) =>
-            val result = RedisKeyValue(key.utf8String, RdbValue.RdbString(value.utf8String), state.nextExpiry)
-            val newState = state.copy(
-              phase = ParsingPhase.ReadingOpCode,
-              buffer = bufferAfterValue,
-              nextExpiry = None // Reset next expiry after reading a key-value pair
-            )
-            (newState, Some(result), true) // Successfully parsed a key-value pair
+            val result = RedisKeyValue(key.utf8String, value, state.nextExpiry)
+            val bytesConsumed = state.buffer.length - bufferAfterValue.length
+            val newState = state.consume(bytes = bytesConsumed, nextPhase = ReadingOpCode).copy(nextExpiry = None)
+            (newState, Some(result), true) // Successfully parsed key-value pair
         }
     }
   }
 
-  private def parseString(buffer: ByteString): Option[(ByteString, ByteString)] = ParsedLength.parse(buffer) match {
-    case None                                    => None // Not enough data to parse the length
-    case Some(ParsedLength(value, consumeBytes)) =>
-      val totalLengthForConsume = value + consumeBytes
-      if (buffer.length >= totalLengthForConsume) {
-        val stringValue = buffer.slice(consumeBytes, totalLengthForConsume)
-        val remainingBuffer = buffer.drop(totalLengthForConsume)
-        Some((stringValue, remainingBuffer))
+  private def parseString(buffer: ByteString): Option[(ByteString, ByteString)] = {
+    val firstByte = buffer.headOption.map(_.toInt & 0xff).getOrElse(-1)
+    if ((firstByte >> 6) == 0x03) // Special case 11xxxxxx
+      throw new RuntimeException("Special case 11xxxxxx is not a length")
+    ParsedLength.parse(buffer).flatMap { parsedLength =>
+      val totalLength = parsedLength.value + parsedLength.consumeBytes
+      if (buffer.length >= totalLength) {
+        val stringValue = buffer.slice(parsedLength.consumeBytes, totalLength)
+        val remainingBuffer = buffer.drop(totalLength)
+        Some((stringValue, remainingBuffer)) // Return the parsed string and the remaining buffer
       } else {
         None // Not enough data to read the string
       }
+    }
   }
+
+  private def parseEncodedInteger(buffer: ByteString, size: Int): Option[(Int, ByteString)] =
+    if (buffer.length < size) None
+    else {
+      val value = size match {
+        case 1 => buffer.head.toLong
+        case 2 => buffer.iterator.getShort(using ByteOrder.LITTLE_ENDIAN).toLong
+        case 4 => buffer.iterator.getInt(using ByteOrder.LITTLE_ENDIAN).toLong
+        case _ => throw new RuntimeException(s"Unsupported size for encoded integer: $size")
+      }
+      val remainingBuffer = buffer.drop(size)
+      Some((value.toInt, remainingBuffer)) // Return as Int, since RDB uses 32-bit integers
+    }
 
   private def parseHeader(state: ParserState): ParsingIntermediateResult =
     if (state.buffer.length < 9) {
@@ -108,30 +135,28 @@ object RedisRdbFile {
 
       rdbOpCode match {
         case EOF =>
-          (state.copy(phase = Finished), None, false) // End of file, stop parsing
+          (state.consume(1, Finished), None, false) // End of file, transition to Finished phase
         case SELECT_DB =>
-          ParsedLength.parse(bufferAfterOpCode) match {
-            case None =>
-              (state, None, false) // Not enough data to read the DB number
-            case Some(ParsedLength(dbNumber, consumeBytes)) =>
-              val newState = state.copy(
-                phase = ReadingOpCode,
-                buffer = bufferAfterOpCode.drop(consumeBytes),
-                currentDb = dbNumber
-              )
+          ParsedLength.parse(state.buffer.drop(1)) match {
+            case None         => (state, None, false) // Not enough data to read the DB number
+            case Some(length) =>
+              val dbNumber = length.value
+              val bytesToConsume = length.consumeBytes + 1 // +1 for the opcode byte
+              val newState = state
+                .consume(bytesToConsume, ReadingOpCode)
+                .copy(currentDb = dbNumber, nextExpiry = None)
               (newState, None, true) // Successfully parsed SELECT_DB
-            case None => (state, None, false) // Not enough data to read the DB number
           }
         case EXPIRETIME_MS =>
-          if (bufferAfterOpCode.length < 8) {
+          if (bufferAfterOpCode.length < 9) {
             (state, None, false) // Not enough data to read the expiry time, 8 bytes needed for Long
           } else {
             val expiryTime = bufferAfterOpCode.iterator.getLong(using ByteOrder.LITTLE_ENDIAN)
-            val newState = state.copy(
-              phase = ReadingOpCode,
-              buffer = bufferAfterOpCode.drop(8),
-              nextExpiry = Some(expiryTime)
-            )
+            val newState = state
+              .consume(9, ReadingOpCode)
+              .copy(
+                nextExpiry = Some(expiryTime) // Already in milliseconds
+              )
             (newState, None, true) // Successfully parsed EXPIRETIME_MS
           }
         case EXPIRETIME =>
@@ -139,11 +164,11 @@ object RedisRdbFile {
             (state, None, false) // Not enough data to read the expiry time, 4 bytes needed for Int
           } else {
             val expiryTime = bufferAfterOpCode.iterator.getInt(using ByteOrder.LITTLE_ENDIAN)
-            val newState = state.copy(
-              phase = ReadingOpCode,
-              buffer = bufferAfterOpCode.drop(4),
-              nextExpiry = Some(expiryTime.toLong * 1000) // Convert seconds to milliseconds
-            )
+            val newState = state
+              .consume(4, ReadingOpCode)
+              .copy(
+                nextExpiry = Some(expiryTime * 1000L) // Convert seconds to milliseconds
+              )
             (newState, None, true) // Successfully parsed EXPIRETIME
           }
         case RESIZE_DB | AUX =>

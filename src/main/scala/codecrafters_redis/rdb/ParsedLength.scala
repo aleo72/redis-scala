@@ -1,6 +1,6 @@
 package codecrafters_redis.rdb
 
-import akka.util.ByteString
+import org.apache.pekko.util.ByteString
 
 import java.nio.ByteOrder.BIG_ENDIAN
 case class ParsedLength(value: Int, consumeBytes: Int)

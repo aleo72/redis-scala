@@ -1,9 +1,9 @@
 package codecrafters_redis.actors
 
-import akka.actor.typed.scaladsl.{Behaviors, StashBuffer}
-import akka.actor.typed.{ActorRef, Behavior}
-import akka.stream.scaladsl.SourceQueueWithComplete
-import akka.util.ByteString
+import org.apache.pekko.actor.typed.scaladsl.{Behaviors, StashBuffer}
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
+import org.apache.pekko.util.ByteString
 import codecrafters_redis.commands.ExpectedResponse.*
 import codecrafters_redis.commands.{Protocol, ProtocolMessage, RedisCommand}
 

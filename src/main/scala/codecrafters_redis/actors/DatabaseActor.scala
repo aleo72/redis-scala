@@ -1,13 +1,13 @@
 package codecrafters_redis.actors
 
-import akka.NotUsed
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
-import akka.actor.typed.{ActorRef, Behavior}
-import akka.stream.IOResult
+import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.stream.IOResult
 import codecrafters_redis.CmdArgConfig
 import codecrafters_redis.rdb.{RedisKeyValue, RedisRdbFile}
-import akka.stream.scaladsl.{Flow, Source}
-import akka.util.ByteString
+import org.apache.pekko.stream.scaladsl.{Flow, Source}
+import org.apache.pekko.util.ByteString
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -16,7 +16,7 @@ import scala.collection.immutable.Map
 
 object DatabaseActor extends database.KeysTrait {
 
-  val DatabaseKey = akka.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
+  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
   enum InternalCommand:
     case InitializationSuccess(db: Database)
@@ -159,7 +159,7 @@ object DatabaseActor extends database.KeysTrait {
 
   private def loadRdbFileFromDisk(filePath: String)(using ctx: ActorContext[CommandOrResponse]): Future[Database] = {
     given ec: scala.concurrent.ExecutionContext = ctx.executionContext
-    given system: akka.actor.typed.ActorSystem[Nothing] = ctx.system
+    given system: org.apache.pekko.actor.typed.ActorSystem[Nothing] = ctx.system
 
     val path = java.nio.file.Paths.get(filePath)
     if (!java.nio.file.Files.exists(path)) {
@@ -169,7 +169,7 @@ object DatabaseActor extends database.KeysTrait {
       ctx.log.info(s"Loading RDB file from path: $filePath")
     }
 
-    val source: Source[ByteString, Future[IOResult]] = akka.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
+    val source: Source[ByteString, Future[IOResult]] = org.apache.pekko.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
     val rdbFlow: Flow[ByteString, RedisKeyValue, NotUsed] = RedisRdbFile.rdbParserFlow()
     source
       .via(rdbFlow)

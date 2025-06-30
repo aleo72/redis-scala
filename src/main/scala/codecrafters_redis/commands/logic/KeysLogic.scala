@@ -1,8 +1,8 @@
 package codecrafters_redis.commands.logic
 
-import akka.actor.typed.ActorRef
-import akka.stream.scaladsl.SourceQueueWithComplete
-import akka.util.ByteString
+import org.apache.pekko.actor.typed.ActorRef
+import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
+import org.apache.pekko.util.ByteString
 import codecrafters_redis.actors.DatabaseActor
 import codecrafters_redis.commands.{CommandDetectTrait, CommandHandler, ExpectedResponse, ProtocolMessage}
 import org.slf4j.Logger

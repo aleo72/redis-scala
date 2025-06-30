@@ -1,10 +1,10 @@
 package codecrafters_redis.actors
 
-import akka.actor.typed.{ActorSystem, Behavior}
-import akka.actor.typed.scaladsl.Behaviors
-import akka.stream.scaladsl.{Flow, Sink, Source, Tcp}
-import akka.stream.{Materializer, SystemMaterializer}
-import akka.util.ByteString
+import org.apache.pekko.actor.typed.{ActorSystem, Behavior}
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.stream.scaladsl.{Flow, Sink, Source, Tcp}
+import org.apache.pekko.stream.{Materializer, SystemMaterializer}
+import org.apache.pekko.util.ByteString
 import codecrafters_redis.CmdArgConfig
 
 import scala.concurrent.{ExecutionContext, ExecutionContextExecutor}
@@ -32,7 +32,7 @@ object ServerActor {
         s"Accepted new client connection from ${connection.remoteAddress}, spawning ClientActor with name: $nameClient"
       )
       val (queue, source) = Source
-        .queue[ByteString](bufferSize = 1024, overflowStrategy = akka.stream.OverflowStrategy.dropHead)
+        .queue[ByteString](bufferSize = 1024, overflowStrategy = org.apache.pekko.stream.OverflowStrategy.dropHead)
         .preMaterialize()
 
       val handler = context.spawn(ClientActor(queue, dbActor), nameClient)
