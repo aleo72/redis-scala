@@ -1,9 +1,16 @@
 package codecrafters_redis.actors
 
+import akka.NotUsed
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
+import akka.stream.IOResult
 import codecrafters_redis.CmdArgConfig
+import codecrafters_redis.rdb.{RedisKeyValue, RedisRdbFile}
+import akka.stream.scaladsl.{Flow, Source}
+import akka.util.ByteString
 
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 import scala.collection.immutable.Map
 
 object DatabaseActor extends database.KeysTrait {
@@ -38,12 +45,16 @@ object DatabaseActor extends database.KeysTrait {
   def apply(cmdArgConfig: CmdArgConfig): Behavior[CommandOrResponse] =
     Behaviors.setup { ctx =>
       ctx.log.info("Creating DatabaseActor")
-      val db = Map.empty[String, (Array[Byte], Option[Long])]
-      handler(db, cmdArgConfig)
-        .receiveSignal { case (_, akka.actor.typed.PostStop) =>
-          ctx.log.info("DatabaseActor stopped.")
-          Behaviors.stopped
-        }
+      val dbFuture = loadRdbFile(cmdArgConfig)(using ctx)
+
+      dbFuture.map { db =>
+        handler(db, cmdArgConfig)
+          .receiveSignal { case (_, akka.actor.typed.PostStop) =>
+            ctx.log.info("DatabaseActor stopped.")
+            Behaviors.stopped
+          }
+      }
+
     }
 
   def handler(
@@ -114,6 +125,43 @@ object DatabaseActor extends database.KeysTrait {
         cmd.replyTo ! Response.Error("Unknown config key")
     }
     handler(db, cmdArgConfig)
+  }
+
+  private def loadRdbFile(cmdArgConfig: CmdArgConfig)(using ctx: ActorContext[CommandOrResponse]): Future[Database] = {
+
+    val filePath: Option[String] = for {
+      realDir <- cmdArgConfig.dir
+      dbFileName <- cmdArgConfig.dbfilename
+    } yield s"$realDir/$dbFileName"
+
+    if (filePath.isEmpty) {
+      Future.successful(Map.empty[String, (Array[Byte], Option[Long])])
+    } else {
+      loadRdbFileFromDisk(filePath.get)
+    }
+  }
+
+  private def loadRdbFileFromDisk(filePath: String)(using ctx: ActorContext[CommandOrResponse]): Future[Database] = {
+    given ec: scala.concurrent.ExecutionContext = ctx.executionContext
+    given system: akka.actor.typed.ActorSystem[Nothing] = ctx.system
+
+    val path = java.nio.file.Paths.get(filePath)
+    if (!java.nio.file.Files.exists(path)) {
+      ctx.log.warn(s"RDB file not found at path: $filePath")
+      return Future.successful(Map.empty[String, (Array[Byte], Option[Long])])
+    } else {
+      ctx.log.info(s"Loading RDB file from path: $filePath")
+    }
+
+    val source: Source[ByteString, Future[IOResult]] = akka.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
+    val rdbFlow: Flow[ByteString, RedisKeyValue, NotUsed] = RedisRdbFile.rdbParserFlow()
+    source
+      .via(rdbFlow)
+      .runFold(Map.empty[String, (Array[Byte], Option[Long])]) { (db, redisKeyValue) =>
+        ctx.log.info(s"Parsed key: ${redisKeyValue.key}, value: ${redisKeyValue.value}")
+        val expiry = redisKeyValue.expireAt
+        db + (redisKeyValue.key -> (redisKeyValue.value.toString.getBytes, expiry))
+      }
   }
 
 }

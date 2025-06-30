@@ -32,7 +32,7 @@ object ParsedLength {
         case `02` => // Case 3: 10xxxxxx -> 32-bit length number
           if (buffer.length < 5) None
           else {
-            val length = buffer.drop(1).iterator.getInt(BIG_ENDIAN)
+            val length = buffer.drop(1).iterator.getInt(using BIG_ENDIAN)
             Some(ParsedLength(length, 5))
           }
         case `03` => // Case 4: 11xxxxxx -> special case, not length
