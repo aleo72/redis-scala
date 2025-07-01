@@ -168,14 +168,13 @@ object RedisRdbFile {
             (newState, None, true) // Successfully parsed EXPIRETIME
           }
         case RESIZE_DB.code | AUX.code =>
-          parseString(bufferAfterOpCode)
-            .flatMap { case (_, bufferAfterKey) =>
-              skipValue(bufferAfterKey).map { bufferAfterValue =>
-                val bytesConsumed = state.buffer.length - bufferAfterValue.length
-                (state.consume(bytesConsumed, ReadingOpCode), None, true)
-              }
+          parseString(bufferAfterOpCode).flatMap { case (_, bufferAfterKey) =>
+            skipValue(bufferAfterKey).map { bufferAfterValue =>
+              val bytesConsumed = state.buffer.length - bufferAfterValue.length
+              (state.consume(bytesConsumed, ReadingOpCode), None, true)
             }
-            .getOrElse((state, None, false)) // Если не хватает данных, ждем еще
+          }.getOrElse((state, None, false)) // Если не хватает данных, ждем еще
+
         case valueTypeCodee =>
           (state.copy(phase = ReadingKeyValuePair(valueTypeCodee), buffer = bufferAfterOpCode), None, true) // Proceed to read key-value pair
 
@@ -190,10 +189,10 @@ object RedisRdbFile {
     if ((firstByte >> 6) == 0x03) {
       val bufferAfterType = buffer.drop(1)
       firstByte match {
-        case ENC_INT8.code => if (bufferAfterType.length >= 1) Some(bufferAfterType.drop(1)) else None
+        case ENC_INT8.code  => if (bufferAfterType.length >= 1) Some(bufferAfterType.drop(1)) else None
         case ENC_INT16.code => if (bufferAfterType.length >= 2) Some(bufferAfterType.drop(2)) else None
         case ENC_INT32.code => if (bufferAfterType.length >= 4) Some(bufferAfterType.drop(4)) else None
-        case ENC_LZF.code =>
+        case ENC_LZF.code   =>
           (for {
             compLen <- ParsedLength.parse(bufferAfterType)
             uncompLen <- ParsedLength.parse(bufferAfterType.drop(compLen.consumeBytes))
