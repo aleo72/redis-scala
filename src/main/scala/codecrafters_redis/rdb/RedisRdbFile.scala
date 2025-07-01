@@ -168,20 +168,14 @@ object RedisRdbFile {
             (newState, None, true) // Successfully parsed EXPIRETIME
           }
         case RESIZE_DB.code | AUX.code =>
-          // --- ИСПРАВЛЕННАЯ ЛОГИКА ---
-          // AUX/RESIZE_DB - это пара ключ-значение, которую нужно пропустить.
-          // 1. Пропускаем ключ (это всегда строка).
-          parseString(bufferAfterOpCode) match {
-            case None                      => (state, None, false)
-            case Some((_, bufferAfterKey)) =>
-              // 2. Пропускаем значение (может быть любым типом).
-              skipValue(bufferAfterKey) match {
-                case None                   => (state, None, false)
-                case Some(bufferAfterValue) =>
-                  val bytesConsumed = state.buffer.length - bufferAfterValue.length
-                  (state.consume(bytesConsumed, ReadingOpCode), None, true)
+          parseString(bufferAfterOpCode)
+            .flatMap { case (_, bufferAfterKey) =>
+              skipValue(bufferAfterKey).map { bufferAfterValue =>
+                val bytesConsumed = state.buffer.length - bufferAfterValue.length
+                (state.consume(bytesConsumed, ReadingOpCode), None, true)
               }
-          }
+            }
+            .getOrElse((state, None, false)) // Если не хватает данных, ждем еще
         case valueTypeCodee =>
           (state.copy(phase = ReadingKeyValuePair(valueTypeCodee), buffer = bufferAfterOpCode), None, true) // Proceed to read key-value pair
 
@@ -190,29 +184,32 @@ object RedisRdbFile {
 
   private def skipValue(buffer: ByteString): Option[ByteString] = {
     if (buffer.isEmpty) return None
-    val valueTypeCode = buffer.head.toInt & 0xff
-    val bufferAfterType = buffer.drop(1)
+    val firstByte = buffer.head.toInt & 0xff
 
-    valueTypeCode match {
-      case code if (code >> 6) != 0x03 => // Обычная строка
-        ParsedLength.parse(buffer).flatMap { len =>
-          val bytesToSkip = len.value + len.consumeBytes
-          if (buffer.length >= bytesToSkip) Some(buffer.drop(bytesToSkip)) else None
-        }
-      case ENC_INT8.code  => if (bufferAfterType.length >= 1) Some(bufferAfterType.drop(1)) else None
-      case ENC_INT16.code => if (bufferAfterType.length >= 2) Some(bufferAfterType.drop(2)) else None
-      case ENC_INT32.code => if (bufferAfterType.length >= 4) Some(bufferAfterType.drop(4)) else None
-      case MODULE.code    => throw new RuntimeException("MODULE type not implemented yet")
-      case MODULE_2.code  => throw new RuntimeException("MODULE_2 type not implemented yet")
-      case ENC_LZF.code   => // Пропуск сжатой строки
-        for {
-          compLen <- ParsedLength.parse(bufferAfterType)
-          uncompLen <- ParsedLength.parse(bufferAfterType.drop(compLen.consumeBytes))
-          headerLen = compLen.consumeBytes + uncompLen.consumeBytes
-          bytesToSkip = headerLen + compLen.value
-          result <- if (bufferAfterType.length >= bytesToSkip) Some(bufferAfterType.drop(bytesToSkip)) else None
-        } yield result
-      case _ => throw new RuntimeException(s"Cannot skip unknown value type 0x${valueTypeCode.toHexString}")
+    // Проверяем, это специально закодированное значение (начинается на 11)?
+    if ((firstByte >> 6) == 0x03) {
+      val bufferAfterType = buffer.drop(1)
+      firstByte match {
+        case ENC_INT8.code => if (bufferAfterType.length >= 1) Some(bufferAfterType.drop(1)) else None
+        case ENC_INT16.code => if (bufferAfterType.length >= 2) Some(bufferAfterType.drop(2)) else None
+        case ENC_INT32.code => if (bufferAfterType.length >= 4) Some(bufferAfterType.drop(4)) else None
+        case ENC_LZF.code =>
+          (for {
+            compLen <- ParsedLength.parse(bufferAfterType)
+            uncompLen <- ParsedLength.parse(bufferAfterType.drop(compLen.consumeBytes))
+          } yield {
+            val headerLen = compLen.consumeBytes + uncompLen.consumeBytes
+            val bytesToSkip = headerLen + compLen.value
+            if (bufferAfterType.length >= bytesToSkip) Some(bufferAfterType.drop(bytesToSkip)) else None
+          }).flatten
+        case _ => throw new RuntimeException(s"Cannot skip unknown special value type 0x${firstByte.toHexString}")
+      }
+    } else {
+      // Иначе это обычная строка с префиксом длины
+      ParsedLength.parse(buffer).flatMap { len =>
+        val bytesToSkip = len.value + len.consumeBytes
+        if (buffer.length >= bytesToSkip) Some(buffer.drop(bytesToSkip)) else None
+      }
     }
   }
 }
