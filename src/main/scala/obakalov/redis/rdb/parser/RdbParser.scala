@@ -26,7 +26,7 @@ object RdbParser {
       ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE)
   }
 
-  def parserFlow(): Flow[ByteString, RedisEntry, NotUsed] =
+  def parserFlow(): Flow[ByteString, RedisEntry, ?] =
     Flow[ByteString].statefulMapConcat { () =>
       var state = ParserState(ParsingStep.ReadingHeader)
 

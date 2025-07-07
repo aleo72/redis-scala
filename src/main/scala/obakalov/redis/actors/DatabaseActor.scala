@@ -19,6 +19,8 @@ object DatabaseActor extends database.KeysTrait {
 
   val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
+  val logger = org.slf4j.LoggerFactory.getLogger(DatabaseActor.getClass)
+
   enum InternalCommand:
     case InitializationSuccess(db: Database)
     case InitializationFailure(exception: Throwable)
@@ -171,27 +173,35 @@ object DatabaseActor extends database.KeysTrait {
     }
 
     val source: Source[ByteString, Future[IOResult]] = org.apache.pekko.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
-    val rdbFlow: Flow[ByteString, RedisEntry, NotUsed] = RdbParser.parserFlow()
-    source
+    val rdbFlow: Flow[ByteString, RedisEntry, ?] = RdbParser.parserFlow()
+    val result = source
       .via(rdbFlow)
       .runFold(Map.empty[String, (Array[Byte], Option[Long])]) { (db, redisEntry) =>
-        ctx.log.info(s"Parsed entry: ${redisEntry}")
+        logger.info(s"Parsed entry: ${redisEntry}")
         redisEntry match {
           case RedisEntry.ResizeDb(dbNumber, dbHashTableSize, expireTimeHashTableSize) =>
-            ctx.log.info(s"Resizing database $dbNumber with hash table size $dbHashTableSize and expiry time size $expireTimeHashTableSize")
+            logger.info(s"Resizing database $dbNumber with hash table size $dbHashTableSize and expiry time size $expireTimeHashTableSize")
             db // No action needed for resizing in this context
 
           case RedisEntry.AuxField(key, value) =>
-            ctx.log.info(s"Auxiliary field: $key = $value")
+            logger.info(s"Auxiliary field: $key = $value")
             db // No action needed for auxiliary fields in this context
 
           case RedisEntry.RedisKeyValue(key, value, expireAt, dbNumber) =>
-            ctx.log.info(s"Redis key-value pair: $key = $value with expiry at $expireAt in DB $dbNumber")
+            logger.info(s"Redis key-value pair: $key = $value with expiry at $expireAt in DB $dbNumber")
 
             db + (key -> (value.toString.getBytes, expireAt))
         }
 
       }
+
+    result.onComplete {
+      case Success(database) =>
+        println(s"RDB file loaded successfully with ${database.size} entries.")
+      case Failure(exception) =>
+        println(s"Failed to load RDB file: ${exception.getMessage}")
+    }
+    result
   }
 
 }
