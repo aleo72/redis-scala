@@ -5,7 +5,8 @@ import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuff
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.IOResult
 import codecrafters_redis.CmdArgConfig
-import codecrafters_redis.rdb.{RedisKeyValue, RedisRdbFile}
+import codecrafters_redis.rdb.models.RedisEntry
+import codecrafters_redis.rdb.parser.RdbParser
 import org.apache.pekko.stream.scaladsl.{Flow, Source}
 import org.apache.pekko.util.ByteString
 
@@ -170,13 +171,26 @@ object DatabaseActor extends database.KeysTrait {
     }
 
     val source: Source[ByteString, Future[IOResult]] = org.apache.pekko.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
-    val rdbFlow: Flow[ByteString, RedisKeyValue, NotUsed] = RedisRdbFile.rdbParserFlow()
+    val rdbFlow: Flow[ByteString, RedisEntry, NotUsed] = RdbParser.parserFlow()
     source
       .via(rdbFlow)
-      .runFold(Map.empty[String, (Array[Byte], Option[Long])]) { (db, redisKeyValue) =>
-        ctx.log.info(s"Parsed key: ${redisKeyValue.key}, value: ${redisKeyValue.value}")
-        val expiry = redisKeyValue.expireAt
-        db + (redisKeyValue.key -> (redisKeyValue.value.toString.getBytes, expiry))
+      .runFold(Map.empty[String, (Array[Byte], Option[Long])]) { (db, redisEntry) =>
+        ctx.log.info(s"Parsed entry: ${redisEntry}")
+        redisEntry match {
+          case RedisEntry.ResizeDb(dbNumber, dbHashTableSize, expireTimeHashTableSize) =>
+            ctx.log.info(s"Resizing database $dbNumber with hash table size $dbHashTableSize and expiry time size $expireTimeHashTableSize")
+            db // No action needed for resizing in this context
+
+          case RedisEntry.AuxField(key, value) =>
+            ctx.log.info(s"Auxiliary field: $key = $value")
+            db // No action needed for auxiliary fields in this context
+
+          case RedisEntry.RedisKeyValue(key, value, expireAt, dbNumber) =>
+            ctx.log.info(s"Redis key-value pair: $key = $value with expiry at $expireAt in DB $dbNumber")
+
+            db + (key -> (value.toString.getBytes, expireAt))
+        }
+
       }
   }
 

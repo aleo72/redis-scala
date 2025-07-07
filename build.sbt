@@ -16,6 +16,7 @@ assembly / assemblyMergeStrategy := {
 resolvers += "Akka library repository".at("https://repo.akka.io/maven")
 
 val PekkoVersion = "1.1.4"
+val RdbParserVersion = "2.2.0"
 
 lazy val root = (project in file("."))
   .settings(
@@ -28,5 +29,6 @@ lazy val root = (project in file("."))
       "org.apache.pekko" %% "pekko-actor-typed" % PekkoVersion,
       "org.apache.pekko" %% "pekko-stream" % PekkoVersion, // 'pekko-stream-typed' не существует, функциональность включена в 'pekko-stream'
       "org.apache.pekko" %% "pekko-slf4j" % PekkoVersion
+//      "net.whitbeck" % "rdb-parser" % RdbParserVersion
     )
   )

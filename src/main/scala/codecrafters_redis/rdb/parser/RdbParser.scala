@@ -1,0 +1,294 @@
+package codecrafters_redis.rdb.parser
+
+import codecrafters_redis.rdb.models.RedisEntry
+import org.apache.pekko.NotUsed
+import org.apache.pekko.stream.scaladsl.Flow
+import org.apache.pekko.util.ByteString
+
+import java.nio.charset.StandardCharsets
+import scala.util.control.NonFatal
+
+object RdbParser {
+
+  private val ASCII = StandardCharsets.US_ASCII
+  private val UTF_8 = StandardCharsets.UTF_8
+
+  val VERSION_MIN = 1
+  val VERSION_MAX = 12
+
+  private enum ParsingConsume:
+    case CONTINUE
+    case WAIT_FOR_MORE
+
+  private case class ParserIntermediateResultType(state: ParserState, entry: Option[RedisEntry], isContinue: ParsingConsume)
+
+  def parserFlow(): Flow[ByteString, RedisEntry, NotUsed] =
+    Flow[ByteString].statefulMapConcat { () =>
+      var state = ParserState(ParsingStep.ReadingHeader)
+
+      (chunk: ByteString) => {
+        state = state.append(chunk)
+        var results = Vector.empty[RedisEntry]
+        var isNeedToContinue: ParsingConsume = ParsingConsume.CONTINUE
+        while (ParsingConsume.CONTINUE == isNeedToContinue) {
+          try {
+            val ParserIntermediateResultType(newState, result, canContinue) = readNext(state)
+            state = newState
+            result.foreach(results :+= _)
+            isNeedToContinue = canContinue
+          } catch {
+            case NonFatal(e) =>
+              println(s"!!! PARSING FAILED at offset ~${state.bytesConsumed} !!!")
+              println(s"    Error: ${e.getMessage}")
+              println(s"    Buffer (first 32 bytes): ${state.buffer.take(32).map(b => f"$b%02X").mkString(" ")}")
+              throw e // Останавливаем поток
+          }
+        }
+        results
+      }
+    }
+
+  private def readNext(state: ParserState): ParserIntermediateResultType =
+    state.step match {
+      case ParsingStep.ReadingHeader =>
+        parseHeader(state)
+      case ParsingStep.ReadingOpCode =>
+        parseOpCode(state)
+    }
+
+  private def parseOpCode(state: ParserState): ParserIntermediateResultType =
+    if (state.buffer.isEmpty) {
+      ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the opcode
+    } else {
+      val byte: Byte = state.buffer.head
+      val unsignedInt: Int = byte & 0xff
+      val optCode: OptCode = OptCode.fromCode(unsignedInt)
+      val internalResult: ParserIntermediateResultType = optCode match {
+        case OptCode.EOF       => parseEOF(state)
+        case OptCode.SELECT_DB => parseSelectDb(state)
+        case OptCode.RESIZE_DB => parseResizeDb(state)
+        case OptCode.AUX       => parseAuxField(state)
+      }
+      internalResult
+    }
+
+  private def parseAuxField(state: ParserState): ParserIntermediateResultType = (
+    for {
+      (key, stateAfterKey) <- readString(state.consume(1))
+      (value, stateAfterValue) <- readString(stateAfterKey)
+    } yield {
+      val newState = stateAfterValue.consume(0, ParsingStep.ReadingOpCode)
+      val entry = RedisEntry.AuxField(key, value)
+      ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
+    }
+  ).getOrElse(ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE))
+
+  private def parseResizeDb(state: ParserState): ParserIntermediateResultType = (
+    for {
+      (dbHashSize, stateAfterHashSize) <- readLength(state.consume(1))
+      (dbExpiresSize, stateAfterExpiresSize) <- readLength(stateAfterHashSize)
+    } yield {
+      val newState = stateAfterExpiresSize.consume(0, ParsingStep.ReadingOpCode)
+      val entry = RedisEntry.ResizeDb(
+        dbNumber = newState.currentDb,
+        dbHashTableSize = dbHashSize,
+        expireTimeHashTableSize = dbExpiresSize
+      )
+      ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
+    }
+  ).getOrElse(ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE))
+
+  private def parseSelectDb(state: ParserState): ParserIntermediateResultType =
+    readLength(state) match {
+      case None =>
+        ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the length
+      case Some((value, newState)) =>
+        if (value < 0 || value > 255) {
+          throw new IllegalArgumentException(s"Invalid database number: $value")
+        }
+        val dbNumber = value.toInt
+        ParserIntermediateResultType(newState.copy(currentDb = dbNumber, step = ParsingStep.ReadingOpCode), None, ParsingConsume.CONTINUE)
+    }
+
+  private def readLength(state: ParserState): Option[(Long, ParserState)] =
+    if (state.buffer.isEmpty) {
+      None // Not enough data to read the length
+    } else {
+      val firstByte = state.buffer.head & 0xff
+      val flag = (firstByte & 0xc0) >> 6
+      if (flag == 0) {
+        // 00|xxxxxx -> 6-bit length number. The last 6 bits of this byte represent the length.
+        val length = firstByte & 0x3f
+        val newState = state.consume(1, ParsingStep.ReadingOpCode)
+        Option((length, newState))
+      } else if (flag == 1) {
+        // 01|xxxxxx -> 14-bit length number. The last 6 bits of this byte and the next byte represent the length.
+        if (state.buffer.length < 2) {
+          None // Not enough data to read the length
+        } else {
+          val firstPart = firstByte & 0x3f
+          val secondByte = state.buffer.slice(1, 2).head
+          val secondPart = secondByte & 0xff
+          Option(
+            ((firstPart << 8) | secondPart, state.consume(2, ParsingStep.ReadingOpCode))
+          )
+        }
+      } else if (firstByte == 0x80) {
+        // 10|000000 -> 32-bit length number. Integer is represented by the next 4 bytes.
+        if (state.buffer.length < 5) {
+          None // Not enough data to read the length
+        } else {
+          val bytes = state.buffer.slice(1, 5)
+          val length = bytes.iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN)
+          Option((length.toLong, state.consume(1 + 4, ParsingStep.ReadingOpCode)))
+        }
+      } else if (firstByte == 0x81) {
+        // 10|000001 -> 32-bit length number with a special flag
+        val length32bit = 8 + 1 // 8 bytes for the length + 1 byte for the flag
+        if (state.buffer.length < length32bit) {
+          None // Not enough data to read the length
+        } else {
+          val bytes = state.buffer.slice(1, length32bit)
+          val length = bytes.iterator.getLong(using java.nio.ByteOrder.BIG_ENDIAN)
+          Option((length, state.consume(length32bit, ParsingStep.ReadingOpCode)))
+        }
+      } else {
+        // 11|xxxxxx -> special case, not a length
+        throw new RuntimeException("Special case 11xxxxxx is not a length")
+      }
+    }
+
+  private def readString(state: ParserState): Option[(String, ParserState)] =
+    if (state.buffer.isEmpty) {
+      None
+    } else {
+      val firstByte = state.buffer.head & 0xff
+      val flag = (firstByte & 0xc0) >> 6
+      flag match {
+        case 0 => // 00|xxxxxx -> 6-bit value of length string
+          val lengthString = firstByte & 0x3f
+          if (state.buffer.length < lengthString + 1) {
+            None // Not enought data to read the string
+          } else {
+            val stringBytes = state.buffer.slice(1, lengthString + 1).utf8String
+            val newState = state.consume(lengthString + 1, ParsingStep.ReadingOpCode)
+            Some((stringBytes, newState))
+          }
+        case 1 => // 01|xxxxxx -> 14-bit value of length string
+          val lengthValue = 2
+          if (state.buffer.length < lengthValue) {
+            None // not enough data to read the length
+          } else {
+            val firstPart = firstByte & 0x3f
+            val secondByte = state.buffer.slice(1, 2).head
+            val secondPart = secondByte & 0xff
+            val lengthString = (firstPart << 8) | secondPart
+            extractString(state, lengthString, lengthValue)
+          }
+        case 2 => // 10|xxxxxx -> 32-bit value of length string
+          val lengthValue = 5 // 1 byte for flag + 4 bytes for length
+          if (state.buffer.length < lengthValue) {
+            None // Not enough data to read the length
+          } else {
+            val bytes = state.buffer.slice(1, lengthValue)
+            val lengthString = bytes.iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN)
+            extractString(state, lengthString, lengthValue)
+          }
+        case 3 => // 11|xxxxxx -> special case, not a length
+          readSpecialString(state.consume(1), firstByte & 0x3f)
+        case _ => throw new RuntimeException(s"Invalid flag $flag for string length")
+      }
+    }
+
+  private def readSpecialString(state: ParserState, stringType: Int): Option[(String, ParserState)] =
+    stringType match {
+      case 0 => // read integer 8bit as string
+        if (state.buffer.isEmpty) {
+          None // Not enough data to read the string
+        } else {
+          val stringBytes = String.valueOf(state.buffer.head)
+          val newState = state.consume(1, ParsingStep.ReadingOpCode)
+          Some((stringBytes, newState))
+        }
+      case 1 => // read integer 16bit as string
+        if (state.buffer.length < 2) {
+          None // Not enough data to read the string
+        } else {
+          val stringBytes = String.valueOf(state.buffer.take(2).iterator.getShort(using java.nio.ByteOrder.BIG_ENDIAN))
+          val newState = state.consume(2, ParsingStep.ReadingOpCode)
+          Some((stringBytes, newState))
+        }
+      case 2 => // read integer 32bit as string
+        if (state.buffer.length < 4) {
+          None // Not enough data to read the string
+        } else {
+          val stringBytes = String.valueOf(state.buffer.take(4).iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN))
+          val newState = state.consume(4, ParsingStep.ReadingOpCode)
+          Some((stringBytes, newState))
+        }
+      case 3 => // read Lzf compressed string
+        readLzfCompressedString(state.consume(1))
+    }
+
+  private def readLzfCompressedString(state: ParserState): Option[(String, ParserState)] =
+    for {
+      (sourceLength, stateAfterSourceLength) <- readLength(state)
+      (compressedLength, stateAfterCompressedLength) <- readLength(stateAfterSourceLength)
+      if stateAfterCompressedLength.buffer.length >= sourceLength
+    } yield {
+      val compressedBytes: ByteString = stateAfterCompressedLength.buffer.take(compressedLength.toInt)
+      val decompressed = Lzf.decompress(compressedBytes)
+      decompressed -> stateAfterCompressedLength.consume(sourceLength.toInt, ParsingStep.ReadingOpCode) // Placeholder for LZF decompression
+    }
+
+  private def extractString(state: ParserState, lengthString: Int, lengthValue: Int): Option[(String, ParserState)] = {
+    if (state.buffer.length < lengthString + lengthValue) {
+      None // Not enough data to read the string
+    } else {
+      val stringBytes = state.buffer.slice(lengthValue, lengthString + lengthValue).utf8String
+      val newState = state.consume(lengthString + lengthValue, ParsingStep.ReadingOpCode)
+      Some((stringBytes, newState))
+    }
+  }
+
+  private def parseEOF(state: ParserState): ParserIntermediateResultType = {
+    val eofCodeLength = 1 // EOF is a single byte
+    // checkf if version more then 5 then we can read checksum else empty
+    if (state.version >= 5) {
+      val checksumLength = 8 // Checksum is 8 bytes
+      if (state.buffer.length < eofCodeLength + checksumLength) {
+        ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the checksum
+      } else {
+        val checksum = state.buffer.drop(eofCodeLength).take(checksumLength)
+        val newState = state.consume(eofCodeLength + checksumLength, ParsingStep.Finished(checksum))
+        ParserIntermediateResultType(newState, None, ParsingConsume.CONTINUE)
+      }
+    } else {
+      // If the version is less than 5, we don't read a checksum
+      ParserIntermediateResultType(state.consume(eofCodeLength, ParsingStep.Finished(ByteString.empty)), None, ParsingConsume.CONTINUE)
+    }
+  }
+
+  private def parseHeader(state: ParserState): ParserIntermediateResultType = {
+    val magicLength = 5
+    val versionLength = 4
+    val headerLength = magicLength + versionLength
+
+    if (state.buffer.length < headerLength) {
+      ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the header
+    } else {
+      val magic: String = state.buffer.take(magicLength).decodeString(ASCII)
+      if (magic != "REDIS") throw new IllegalArgumentException(s"Invalid RDB magic: $magic")
+      val versionBytes = state.buffer.drop(magicLength).take(headerLength).decodeString(ASCII)
+      val versionBytesIntMaybe = versionBytes.toIntOption
+      versionBytesIntMaybe match {
+        case Some(version) if VERSION_MIN >= 1 && VERSION_MAX <= 12 =>
+          val newState = state
+            .consume(headerLength, ParsingStep.ReadingOpCode)
+            .setVersion(version)
+          ParserIntermediateResultType(newState, None, ParsingConsume.CONTINUE)
+        case _ => throw new IllegalArgumentException(s"Invalid RDB version: ${state.buffer.drop(magicLength).take(versionLength).decodeString(ASCII)}")
+      }
+    }
+  }
+}
