@@ -38,7 +38,7 @@ case class ParserState(
 enum ParsingStep:
   case ReadingHeader
   case ReadingOpCode
-  case ReadOpCode(optCode: OptCode)
+  case ReadOpCode(optCode: OpCode)
   case Finished(checksum: ByteString)
 
 enum ParsingEntry:

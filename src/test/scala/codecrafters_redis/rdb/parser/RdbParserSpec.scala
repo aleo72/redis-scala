@@ -16,7 +16,7 @@ class RdbParserSpec extends AnyFlatSpec with Matchers {
     )
     var initialState = ParserState(step = ParsingStep.ReadingHeader, buffer = buffer)
 
-    for (i <- 0 until 6) {
+    for (i <- 0 until 8) {
       val r = RdbParser.readNext(state = initialState)
       println(s"|Step: ${r.state.step}\n|Buffer: ```${r.state.buffer.utf8String}```\n|Buffer bytes: ${r.state.buffer}")
       println(s"|Bytes consumed: ${r.state.bytesConsumed}, Version: ${r.state.version}")

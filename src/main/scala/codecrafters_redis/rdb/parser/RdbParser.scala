@@ -1,6 +1,6 @@
 package codecrafters_redis.rdb.parser
 
-import codecrafters_redis.rdb.models.RedisEntry
+import codecrafters_redis.rdb.models.{RdbValue, RedisEntry}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow
 import org.apache.pekko.util.ByteString
@@ -54,7 +54,6 @@ object RdbParser {
     }
 
   def readNext(state: ParserState): ParserIntermediateResultType = {
-    println(s"Reading next entry at offset ${state.bytesConsumed}, step: ${state.step}")
     state.step match {
       case ParsingStep.ReadingHeader =>
         parseHeader(state)
@@ -64,37 +63,72 @@ object RdbParser {
   }
 
   private def parseOptCode(state: ParserState): ParserIntermediateResultType = {
-    println(s"Parsing opcode at offset ${state.bytesConsumed}, buffer length: ${state.buffer.length}")
     if (state.buffer.isEmpty) {
       ParserIntermediateResultType.waitForMore(state) // Not enough data to read the opcode
     } else {
-      val (newState, optCode) = updateOptCodeInState(state)
+      val (newState, optCode) = updateOpCodeInState(state)
       val internalResult: ParserIntermediateResultType = optCode match {
-        case OptCode.EOF           => parseEOF(newState)
-        case OptCode.SELECT_DB     => parseSelectDb(newState)
-        case OptCode.RESIZE_DB     => parseResizeDb(newState)
-        case OptCode.AUX           => parseAuxField(newState)
-        case OptCode.EXPIRETIME    => ???
-        case OptCode.EXPIRETIME_MS => ???
-        case OptCode.__ENTRY__     => parseEntry(newState)
+        case OpCode.EOF                 => parseEOF(newState)
+        case OpCode.SELECT_DB           => parseSelectDb(newState)
+        case OpCode.RESIZE_DB           => parseResizeDb(newState)
+        case OpCode.AUX                 => parseAuxField(newState)
+        case o @ OpCode.MODULE_AUX      => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
+        case o @ OpCode.FUNCTION_PRE_GA => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
+        case o @ OpCode.FUNCTION_PRE_GA => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
+        case o @ OpCode.FUNCTION2       => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
+        case o @ OpCode.SLOT_INFO       => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
+        case OpCode.EXPIRETIME          => parseExpireTime(newState, isMs = false)
+        case OpCode.EXPIRETIME_MS       => parseExpireTime(newState, isMs = true)
+        case OpCode.ENTRY_KEY_VALUE     => parseKeyValueEntry(newState)
       }
       internalResult
     }
   }
 
-  private def updateOptCodeInState(state: ParserState): (ParserState, OptCode) = {
+  private def updateOpCodeInState(state: ParserState): (ParserState, OpCode) = {
     state.step match {
       case s: ParsingStep.ReadOpCode => state -> s.optCode
       case ParsingStep.ReadingOpCode =>
         val byte: Byte = state.buffer.head
         val unsignedInt: Int = byte & 0xff
-        val optCode: OptCode = OptCode.fromCode(unsignedInt)
+        val optCode: OpCode = OpCode.fromCode(unsignedInt)
         state.consume(1, ParsingStep.ReadOpCode(optCode)) -> optCode
       case _ => throw new IllegalStateException("Expected to be in ReadingOpCode step with an OptCode")
     }
   }
 
-  private def parseEntry(state: ParserState): ParserIntermediateResultType = ???
+  private def parseExpireTime(state: ParserState, isMs: Boolean): ParserIntermediateResultType =
+    val readBytes = if (isMs) 8 else 4 // 8 bytes for milliseconds, 4 bytes for seconds
+    if (state.buffer.length < readBytes) {
+      ParserIntermediateResultType.waitForMore(state)
+    } else {
+      state.buffer.take(readBytes).iterator.getLong(using java.nio.ByteOrder.BIG_ENDIAN) match {
+        case expireTime if expireTime < 0 =>
+          throw new IllegalArgumentException(s"Invalid expire time: $expireTime")
+        case expireTime =>
+          val newState = state.consume(readBytes, ParsingStep.ReadingOpCode).copy(nextExpiry = Some(expireTime))
+          ParserIntermediateResultType(newState, None, ParsingConsume.CONTINUE)
+      }
+    }
+
+  private def parseKeyValueEntry(state: ParserState): ParserIntermediateResultType = {
+    for {
+      (key, stateAfterKey) <- readString(state)
+      (value, stateAfterValue) <- readStringEncoded(stateAfterKey)
+    } yield {
+      val entry = RedisEntry.RedisKeyValue(
+        key = key,
+        value = RdbValue.RdbValue(value),
+        expireAt = stateAfterValue.nextExpiry,
+        dbNumber = stateAfterValue.currentDb
+      )
+      val newState = stateAfterValue.copy(
+        step = ParsingStep.ReadingOpCode,
+        nextExpiry = None // Reset next expiry as it is not applicable for key-value pairs
+      )
+      ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
+    }
+  }.getOrElse(ParserIntermediateResultType.waitForMore(state))
 
   private def parseAuxField(state: ParserState): ParserIntermediateResultType = (
     for {
@@ -183,6 +217,9 @@ object RdbParser {
     }
 
   private def readString(state: ParserState): Option[(String, ParserState)] =
+    readStringEncoded(state).map(x => String(x._1, UTF_8) -> x._2)
+
+  private def readStringEncoded(state: ParserState): Option[(Array[Byte], ParserState)] =
     if (state.buffer.isEmpty) {
       None
     } else {
@@ -194,7 +231,7 @@ object RdbParser {
           if (state.buffer.length < lengthString + 1) {
             None // Not enought data to read the string
           } else {
-            val stringBytes = state.buffer.slice(1, lengthString + 1).utf8String
+            val stringBytes = state.buffer.slice(1, lengthString + 1).toArray
             val newState = state.consume(lengthString + 1, ParsingStep.ReadingOpCode)
             Some((stringBytes, newState))
           }
@@ -207,7 +244,7 @@ object RdbParser {
             val secondByte = state.buffer.slice(1, 2).head
             val secondPart = secondByte & 0xff
             val lengthString = (firstPart << 8) | secondPart
-            extractString(state, lengthString, lengthValue)
+            extractStringEncoded(state, lengthString, lengthValue)
           }
         case 2 => // 10|xxxxxx -> 32-bit value of length string
           val lengthValue = 5 // 1 byte for flag + 4 bytes for length
@@ -216,21 +253,21 @@ object RdbParser {
           } else {
             val bytes = state.buffer.slice(1, lengthValue)
             val lengthString = bytes.iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN)
-            extractString(state, lengthString, lengthValue)
+            extractStringEncoded(state, lengthString, lengthValue)
           }
         case 3 => // 11|xxxxxx -> special case, not a length
-          readSpecialString(state.consume(1), firstByte & 0x3f)
+          readSpecialStringEncoded(state.consume(1), firstByte & 0x3f)
         case _ => throw new RuntimeException(s"Invalid flag $flag for string length")
       }
     }
 
-  private def readSpecialString(state: ParserState, stringType: Int): Option[(String, ParserState)] =
+  private def readSpecialStringEncoded(state: ParserState, stringType: Int): Option[(Array[Byte], ParserState)] =
     stringType match {
       case 0 => // read integer 8bit as string
         if (state.buffer.isEmpty) {
           None // Not enough data to read the string
         } else {
-          val stringBytes = String.valueOf(state.buffer.head)
+          val stringBytes = String.valueOf(state.buffer.head).getBytes
           val newState = state.consume(1, ParsingStep.ReadingOpCode)
           Some((stringBytes, newState))
         }
@@ -238,7 +275,7 @@ object RdbParser {
         if (state.buffer.length < 2) {
           None // Not enough data to read the string
         } else {
-          val stringBytes = String.valueOf(state.buffer.take(2).iterator.getShort(using java.nio.ByteOrder.BIG_ENDIAN))
+          val stringBytes = String.valueOf(state.buffer.take(2).iterator.getShort(using java.nio.ByteOrder.BIG_ENDIAN)).getBytes
           val newState = state.consume(2, ParsingStep.ReadingOpCode)
           Some((stringBytes, newState))
         }
@@ -246,7 +283,7 @@ object RdbParser {
         if (state.buffer.length < 4) {
           None // Not enough data to read the string
         } else {
-          val stringBytes = String.valueOf(state.buffer.take(4).iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN))
+          val stringBytes = String.valueOf(state.buffer.take(4).iterator.getInt(using java.nio.ByteOrder.BIG_ENDIAN)).getBytes
           val newState = state.consume(4, ParsingStep.ReadingOpCode)
           Some((stringBytes, newState))
         }
@@ -254,22 +291,22 @@ object RdbParser {
         readLzfCompressedString(state.consume(1))
     }
 
-  private def readLzfCompressedString(state: ParserState): Option[(String, ParserState)] =
+  private def readLzfCompressedString(state: ParserState): Option[(Array[Byte], ParserState)] =
     for {
       (sourceLength, stateAfterSourceLength) <- readLength(state)
       (compressedLength, stateAfterCompressedLength) <- readLength(stateAfterSourceLength)
       if stateAfterCompressedLength.buffer.length >= sourceLength
     } yield {
       val compressedBytes: ByteString = stateAfterCompressedLength.buffer.take(compressedLength.toInt)
-      val decompressed = Lzf.decompress(compressedBytes)
+      val decompressed = Lzf.decompress(compressedBytes).getBytes
       decompressed -> stateAfterCompressedLength.consume(sourceLength.toInt, ParsingStep.ReadingOpCode) // Placeholder for LZF decompression
     }
 
-  private def extractString(state: ParserState, lengthString: Int, lengthValue: Int): Option[(String, ParserState)] = {
+  private def extractStringEncoded(state: ParserState, lengthString: Int, lengthValue: Int): Option[(Array[Byte], ParserState)] = {
     if (state.buffer.length < lengthString + lengthValue) {
       None // Not enough data to read the string
     } else {
-      val stringBytes = state.buffer.slice(lengthValue, lengthString + lengthValue).utf8String
+      val stringBytes = state.buffer.slice(lengthValue, lengthString + lengthValue).toArray
       val newState = state.consume(lengthString + lengthValue, ParsingStep.ReadingOpCode)
       Some((stringBytes, newState))
     }
@@ -310,7 +347,6 @@ object RdbParser {
           val newState = state
             .consume(headerLength, ParsingStep.ReadingOpCode)
             .setVersion(version)
-          println(s"Step ReadingHeader: version $version")
           ParserIntermediateResultType(newState, None, ParsingConsume.CONTINUE)
         case _ =>
           throw new IllegalArgumentException(
