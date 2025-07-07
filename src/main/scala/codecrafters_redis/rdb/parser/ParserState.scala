@@ -29,9 +29,16 @@ case class ParserState(
     )
 }
 
+/** Represents the current parsing step in the RDB file. This enum is used to track the state of the parser as it processes the RDB file.
+  *   - `ReadingHeader`: The parser is reading the header of the RDB file.
+  *   - `ReadingOpCode`: The parser is reading the operation code (OpCode).
+  *   - `ReadOpCode(optCode: OptCode)`: The parser has read an OpCode and is now processing it.
+  *   - `Finished(checksum: ByteString)`: The parser has finished reading the RDB file and has a checksum.
+  */
 enum ParsingStep:
   case ReadingHeader
   case ReadingOpCode
+  case ReadOpCode(optCode: OptCode)
   case Finished(checksum: ByteString)
 
 enum ParsingEntry:

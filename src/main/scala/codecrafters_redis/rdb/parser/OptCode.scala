@@ -14,7 +14,7 @@ enum OptCode(val code: Int):
   case FUNCTION2 extends OptCode(0xf5)
   case SLOT_INFO extends OptCode(0xf4)
 
-  case __UNKNOWN__ extends OptCode(0x00)
+  case __ENTRY__ extends OptCode(0x00)
 
 object OptCode:
-  def fromCode(code: Int): OptCode = values.find(_.code == code).getOrElse(__UNKNOWN__)
+  def fromCode(code: Int): OptCode = values.find(_.code == code).getOrElse(__ENTRY__)

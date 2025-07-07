@@ -16,11 +16,15 @@ object RdbParser {
   val VERSION_MIN = 1
   val VERSION_MAX = 12
 
-  private enum ParsingConsume:
+  enum ParsingConsume:
     case CONTINUE
     case WAIT_FOR_MORE
 
-  private case class ParserIntermediateResultType(state: ParserState, entry: Option[RedisEntry], isContinue: ParsingConsume)
+  case class ParserIntermediateResultType(state: ParserState, entry: Option[RedisEntry], isContinue: ParsingConsume)
+  object ParserIntermediateResultType {
+    def waitForMore(state: ParserState): ParserIntermediateResultType =
+      ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE)
+  }
 
   def parserFlow(): Flow[ByteString, RedisEntry, NotUsed] =
     Flow[ByteString].statefulMapConcat { () =>
@@ -41,6 +45,7 @@ object RdbParser {
               println(s"!!! PARSING FAILED at offset ~${state.bytesConsumed} !!!")
               println(s"    Error: ${e.getMessage}")
               println(s"    Buffer (first 32 bytes): ${state.buffer.take(32).map(b => f"$b%02X").mkString(" ")}")
+              println(s"    Buffer: ${state.buffer}")
               throw e // Останавливаем поток
           }
         }
@@ -48,44 +53,63 @@ object RdbParser {
       }
     }
 
-  private def readNext(state: ParserState): ParserIntermediateResultType =
+  def readNext(state: ParserState): ParserIntermediateResultType = {
+    println(s"Reading next entry at offset ${state.bytesConsumed}, step: ${state.step}")
     state.step match {
       case ParsingStep.ReadingHeader =>
         parseHeader(state)
-      case ParsingStep.ReadingOpCode =>
-        parseOpCode(state)
+      case ParsingStep.ReadingOpCode | ParsingStep.ReadOpCode =>
+        parseOptCode(state)
     }
+  }
 
-  private def parseOpCode(state: ParserState): ParserIntermediateResultType =
+  private def parseOptCode(state: ParserState): ParserIntermediateResultType = {
+    println(s"Parsing opcode at offset ${state.bytesConsumed}, buffer length: ${state.buffer.length}")
     if (state.buffer.isEmpty) {
-      ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the opcode
+      ParserIntermediateResultType.waitForMore(state) // Not enough data to read the opcode
     } else {
-      val byte: Byte = state.buffer.head
-      val unsignedInt: Int = byte & 0xff
-      val optCode: OptCode = OptCode.fromCode(unsignedInt)
+      val (newState, optCode) = updateOptCodeInState(state)
       val internalResult: ParserIntermediateResultType = optCode match {
-        case OptCode.EOF       => parseEOF(state)
-        case OptCode.SELECT_DB => parseSelectDb(state)
-        case OptCode.RESIZE_DB => parseResizeDb(state)
-        case OptCode.AUX       => parseAuxField(state)
+        case OptCode.EOF           => parseEOF(newState)
+        case OptCode.SELECT_DB     => parseSelectDb(newState)
+        case OptCode.RESIZE_DB     => parseResizeDb(newState)
+        case OptCode.AUX           => parseAuxField(newState)
+        case OptCode.EXPIRETIME    => ???
+        case OptCode.EXPIRETIME_MS => ???
+        case OptCode.__ENTRY__     => parseEntry(newState)
       }
       internalResult
     }
+  }
+
+  private def updateOptCodeInState(state: ParserState): (ParserState, OptCode) = {
+    state.step match {
+      case s: ParsingStep.ReadOpCode => state -> s.optCode
+      case ParsingStep.ReadingOpCode =>
+        val byte: Byte = state.buffer.head
+        val unsignedInt: Int = byte & 0xff
+        val optCode: OptCode = OptCode.fromCode(unsignedInt)
+        state.consume(1, ParsingStep.ReadOpCode(optCode)) -> optCode
+      case _ => throw new IllegalStateException("Expected to be in ReadingOpCode step with an OptCode")
+    }
+  }
+
+  private def parseEntry(state: ParserState): ParserIntermediateResultType = ???
 
   private def parseAuxField(state: ParserState): ParserIntermediateResultType = (
     for {
-      (key, stateAfterKey) <- readString(state.consume(1))
+      (key, stateAfterKey) <- readString(state)
       (value, stateAfterValue) <- readString(stateAfterKey)
     } yield {
       val newState = stateAfterValue.consume(0, ParsingStep.ReadingOpCode)
       val entry = RedisEntry.AuxField(key, value)
       ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
     }
-  ).getOrElse(ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE))
+  ).getOrElse(ParserIntermediateResultType.waitForMore(state))
 
   private def parseResizeDb(state: ParserState): ParserIntermediateResultType = (
     for {
-      (dbHashSize, stateAfterHashSize) <- readLength(state.consume(1))
+      (dbHashSize, stateAfterHashSize) <- readLength(state)
       (dbExpiresSize, stateAfterExpiresSize) <- readLength(stateAfterHashSize)
     } yield {
       val newState = stateAfterExpiresSize.consume(0, ParsingStep.ReadingOpCode)
@@ -96,12 +120,12 @@ object RdbParser {
       )
       ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
     }
-  ).getOrElse(ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE))
+  ).getOrElse(ParserIntermediateResultType.waitForMore(state))
 
   private def parseSelectDb(state: ParserState): ParserIntermediateResultType =
     readLength(state) match {
       case None =>
-        ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the length
+        ParserIntermediateResultType.waitForMore(state) // Not enough data to read the length
       case Some((value, newState)) =>
         if (value < 0 || value > 255) {
           throw new IllegalArgumentException(s"Invalid database number: $value")
@@ -257,7 +281,7 @@ object RdbParser {
     if (state.version >= 5) {
       val checksumLength = 8 // Checksum is 8 bytes
       if (state.buffer.length < eofCodeLength + checksumLength) {
-        ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE) // Not enough data to read the checksum
+        ParserIntermediateResultType.waitForMore(state) // Not enough data to read the checksum
       } else {
         val checksum = state.buffer.drop(eofCodeLength).take(checksumLength)
         val newState = state.consume(eofCodeLength + checksumLength, ParsingStep.Finished(checksum))
@@ -269,7 +293,7 @@ object RdbParser {
     }
   }
 
-  private def parseHeader(state: ParserState): ParserIntermediateResultType = {
+  def parseHeader(state: ParserState): ParserIntermediateResultType = {
     val magicLength = 5
     val versionLength = 4
     val headerLength = magicLength + versionLength
@@ -279,15 +303,19 @@ object RdbParser {
     } else {
       val magic: String = state.buffer.take(magicLength).decodeString(ASCII)
       if (magic != "REDIS") throw new IllegalArgumentException(s"Invalid RDB magic: $magic")
-      val versionBytes = state.buffer.drop(magicLength).take(headerLength).decodeString(ASCII)
+      val versionBytes: String = state.buffer.slice(magicLength, headerLength).utf8String
       val versionBytesIntMaybe = versionBytes.toIntOption
       versionBytesIntMaybe match {
-        case Some(version) if VERSION_MIN >= 1 && VERSION_MAX <= 12 =>
+        case Some(version) if version >= VERSION_MIN && version <= VERSION_MAX =>
           val newState = state
             .consume(headerLength, ParsingStep.ReadingOpCode)
             .setVersion(version)
+          println(s"Step ReadingHeader: version $version")
           ParserIntermediateResultType(newState, None, ParsingConsume.CONTINUE)
-        case _ => throw new IllegalArgumentException(s"Invalid RDB version: ${state.buffer.drop(magicLength).take(versionLength).decodeString(ASCII)}")
+        case _ =>
+          throw new IllegalArgumentException(
+            s"Invalid RDB version $versionBytesIntMaybe: ${versionBytes}"
+          )
       }
     }
   }
