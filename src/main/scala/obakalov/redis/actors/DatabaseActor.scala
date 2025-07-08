@@ -1,28 +1,28 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
-import org.apache.pekko.NotUsed
+import obakalov.redis.actors.database.HandlerKeys
+import obakalov.redis.actors.database.read.LoadRdbFileTrait
+import obakalov.redis.rdb.models.{RdbValue, RedisEntry}
+import obakalov.redis.rdb.parser.RdbParser
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.IOResult
-import obakalov.redis.rdb.models.RedisEntry
-import obakalov.redis.rdb.parser.RdbParser
 import org.apache.pekko.stream.scaladsl.{Flow, Source}
 import org.apache.pekko.util.ByteString
 
-import scala.concurrent.ExecutionContext.Implicits.global
+import scala.collection.concurrent.TrieMap
+import scala.collection.immutable.Map
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
-import scala.collection.immutable.Map
 
-object DatabaseActor extends database.KeysTrait {
+object DatabaseActor {
 
-  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
-
-  val logger = org.slf4j.LoggerFactory.getLogger(DatabaseActor.getClass)
+//  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
+  type Database = TrieMap[String, (Array[Byte], Option[Long])]
 
   enum InternalCommand:
-    case InitializationSuccess(db: Database)
+    case InitializationSuccess(initStore: Database)
     case InitializationFailure(exception: Throwable)
 
   enum Command:
@@ -40,20 +40,37 @@ object DatabaseActor extends database.KeysTrait {
 
   type CommandOrResponse = Command | InternalCommand
 
-  type Database = Map[String, (Array[Byte], Option[Long])]
+  import obakalov.redis.actors.database.*
 
   def apply(cmdArgConfig: CmdArgConfig): Behavior[CommandOrResponse] =
     Behaviors.setup { ctx =>
       ctx.log.info("Creating DatabaseActor")
+
+      val loaderRdbFile = new LoadRdbFileTrait {
+        override val context: ActorContext[CommandOrResponse] = ctx
+        override val cmdArgConfig: CmdArgConfig = cmdArgConfig
+      }
+
       Behaviors.withStash(1000) { buffer =>
-        val dbFuture = loadRdbFile(cmdArgConfig)(using ctx)
+        val dbFuture: Future[Database] = loaderRdbFile.loadRdbFile()
         ctx.pipeToSelf(dbFuture) {
-          case Success(db)        => InternalCommand.InitializationSuccess(db)
+          case Success(value)     => InternalCommand.InitializationSuccess(value)
           case Failure(exception) => InternalCommand.InitializationFailure(exception)
         }
         initializing(buffer, cmdArgConfig)
       }
     }
+
+  trait DatabaseFullBehaviorTrait extends DatabaseBehaviourContextTrait with HandlerGET with HandlerSET with HandlerKeys with HandlerConfig
+  def createDatabaseFullBehaviorTrait(
+      context: ActorContext[CommandOrResponse],
+      store: Database,
+      cmdArgConfig: CmdArgConfig
+  ): DatabaseFullBehaviorTrait = new DatabaseFullBehaviorTrait {
+    override val context: ActorContext[CommandOrResponse] = context
+    override val store: Database = store
+    override val cmdArgConfig: CmdArgConfig = cmdArgConfig
+  }
 
   def initializing(
       buffer: StashBuffer[CommandOrResponse],
@@ -61,9 +78,14 @@ object DatabaseActor extends database.KeysTrait {
   ): Behavior[CommandOrResponse] =
     Behaviors.receive { (ctx: ActorContext[CommandOrResponse], message: CommandOrResponse) =>
       message match {
-        case InternalCommand.InitializationSuccess(db) =>
+        case InternalCommand.InitializationSuccess(initStore) =>
           ctx.log.info("Database initialized successfully.")
-          val behavior: Behavior[CommandOrResponse] = handler(db, cmdArgConfig)
+          val databaseFullBehaviors = createDatabaseFullBehaviorTrait(
+            context = ctx,
+            store = initStore,
+            cmdArgConfig = cmdArgConfig
+          )
+          val behavior: Behavior[CommandOrResponse] = handler(databaseFullBehaviors)
           buffer.unstashAll(behavior)
 
         case InternalCommand.InitializationFailure(exception) =>
@@ -77,131 +99,14 @@ object DatabaseActor extends database.KeysTrait {
       }
     }
 
-  def handler(
-      db: Database,
-      cmdArgConfig: CmdArgConfig
-  ): Behaviors.Receive[CommandOrResponse] = Behaviors
+  def handler(handlers: DatabaseFullBehaviorTrait): Behaviors.Receive[CommandOrResponse] = Behaviors
     .receive { case (context: ActorContext[CommandOrResponse], command: CommandOrResponse) =>
       command match {
-        case cmd: Command.Get    => handlerGET(cmd, db, cmdArgConfig, context)
-        case cmd: Command.Set    => handlerSET(cmd, db, cmdArgConfig, context)
-        case cmd: Command.Config => handlerConfig(cmd, db, cmdArgConfig, context)
-        case cmd: Command.Keys   => handlerKeys(cmd, db, cmdArgConfig, context)
+        case cmd: Command.Get    => handlers.handlerGET(cmd)
+        case cmd: Command.Set    => handlers.handlerSET(cmd)
+        case cmd: Command.Config => handlers.handlerConfig(cmd)
+        case cmd: Command.Keys   => handlers.handlerKeys(cmd)
       }
     }
-
-  private def handlerGET(
-      cmd: Command.Get,
-      db: Database,
-      cmdArgConfig: CmdArgConfig,
-      context: ActorContext[CommandOrResponse]
-  ): Behaviors.Receive[CommandOrResponse] = {
-    context.log.info(s"Getting value for key: ${cmd.key}")
-    val value: Option[Array[Byte]] = db
-      .get(cmd.key)
-      .filter { case (_, expiry) => expiry.forall(_ > System.currentTimeMillis()) }
-      .map(_._1)
-    cmd.replyTo ! Response.Value(value)
-    handler(db, CmdArgConfig())
-  }
-
-  private def handlerSET(
-      cmd: Command.Set,
-      db: Database,
-      cmdArgConfig: CmdArgConfig,
-      context: ActorContext[CommandOrResponse]
-  ): Behaviors.Receive[CommandOrResponse] = {
-    context.log.info(s"Setting value for key: ${cmd.key}")
-    val expiryTime = cmd.expired.map(pxValue => pxValue + System.currentTimeMillis())
-    val updatedDb = db + (cmd.key -> (cmd.value.getOrElse(Array.empty[Byte]), expiryTime))
-    cmd.replyTo ! Response.Ok
-    handler(updatedDb, cmdArgConfig)
-  }
-
-  private def handlerConfig(
-      cmd: Command.Config,
-      db: Database,
-      cmdArgConfig: CmdArgConfig,
-      context: ActorContext[CommandOrResponse]
-  ): Behaviors.Receive[CommandOrResponse] = {
-    cmd.get match {
-      case Some("dir") =>
-        context.log.info(s"Current directory is: ${cmdArgConfig.dir.getOrElse("not set")}")
-        val response: Response = cmdArgConfig.dir match {
-          case Some(dir) => Response.ValueBulkString(Seq("dir".getBytes, dir.getBytes))
-          case None      => Response.Value(None)
-        }
-        cmd.replyTo ! response
-      case Some("dbfilename") =>
-        context.log.info(s"Current database filename is: ${cmdArgConfig.dbfilename.getOrElse("not set")}")
-        val response = cmdArgConfig.dbfilename match {
-          case Some(filename) => Response.ValueBulkString(Seq("dbfilename".getBytes, filename.getBytes))
-          case None           => Response.Value(None)
-        }
-        cmd.replyTo ! response
-      case _ =>
-        context.log.error(s"Unknown config key: ${cmd.get.getOrElse("unknown")}")
-        cmd.replyTo ! Response.Error("Unknown config key")
-    }
-    handler(db, cmdArgConfig)
-  }
-
-  private def loadRdbFile(cmdArgConfig: CmdArgConfig)(using ctx: ActorContext[CommandOrResponse]): Future[Database] = {
-
-    val filePath: Option[String] = for {
-      realDir <- cmdArgConfig.dir
-      dbFileName <- cmdArgConfig.dbfilename
-    } yield s"$realDir/$dbFileName"
-
-    if (filePath.isEmpty) {
-      Future.successful(Map.empty[String, (Array[Byte], Option[Long])])
-    } else {
-      loadRdbFileFromDisk(filePath.get)
-    }
-  }
-
-  private def loadRdbFileFromDisk(filePath: String)(using ctx: ActorContext[CommandOrResponse]): Future[Database] = {
-    given ec: scala.concurrent.ExecutionContext = ctx.executionContext
-    given system: org.apache.pekko.actor.typed.ActorSystem[Nothing] = ctx.system
-
-    val path = java.nio.file.Paths.get(filePath)
-    if (!java.nio.file.Files.exists(path)) {
-      ctx.log.warn(s"RDB file not found at path: $filePath")
-      return Future.successful(Map.empty[String, (Array[Byte], Option[Long])])
-    } else {
-      ctx.log.info(s"Loading RDB file from path: $filePath")
-    }
-
-    val source: Source[ByteString, Future[IOResult]] = org.apache.pekko.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
-    val rdbFlow: Flow[ByteString, RedisEntry, ?] = RdbParser.parserFlow()
-    val result = source
-      .via(rdbFlow)
-      .runFold(Map.empty[String, (Array[Byte], Option[Long])]) { (db, redisEntry) =>
-        logger.info(s"Parsed entry: ${redisEntry}")
-        redisEntry match {
-          case RedisEntry.ResizeDb(dbNumber, dbHashTableSize, expireTimeHashTableSize) =>
-            logger.info(s"Resizing database $dbNumber with hash table size $dbHashTableSize and expiry time size $expireTimeHashTableSize")
-            db // No action needed for resizing in this context
-
-          case RedisEntry.AuxField(key, value) =>
-            logger.info(s"Auxiliary field: $key = $value")
-            db // No action needed for auxiliary fields in this context
-
-          case RedisEntry.RedisKeyValue(key, value, expireAt, dbNumber) =>
-            logger.info(s"Redis key-value pair: $key = $value with expiry at $expireAt in DB $dbNumber")
-
-            db + (key -> (value.toString.getBytes, expireAt))
-        }
-
-      }
-
-    result.onComplete {
-      case Success(database) =>
-        println(s"RDB file loaded successfully with ${database.size} entries.")
-      case Failure(exception) =>
-        println(s"Failed to load RDB file: ${exception.getMessage}")
-    }
-    result
-  }
 
 }
