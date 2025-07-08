@@ -16,6 +16,7 @@ trait HandlerGET {
       .get(cmd.key)
       .filter { case (_, expiry) => expiry.forall(_ > System.currentTimeMillis()) }
       .map(_._1)
+
     cmd.replyTo ! Response.Value(value)
     Behaviors.same[CommandOrResponse]
   }

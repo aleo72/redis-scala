@@ -3,16 +3,10 @@ package obakalov.redis.actors
 import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.database.HandlerKeys
 import obakalov.redis.actors.database.read.LoadRdbFileTrait
-import obakalov.redis.rdb.models.{RdbValue, RedisEntry}
-import obakalov.redis.rdb.parser.RdbParser
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import org.apache.pekko.stream.IOResult
-import org.apache.pekko.stream.scaladsl.{Flow, Source}
-import org.apache.pekko.util.ByteString
 
 import scala.collection.concurrent.TrieMap
-import scala.collection.immutable.Map
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
@@ -42,13 +36,13 @@ object DatabaseActor {
 
   import obakalov.redis.actors.database.*
 
-  def apply(cmdArgConfig: CmdArgConfig): Behavior[CommandOrResponse] =
+  def apply(cmdConfig: CmdArgConfig): Behavior[CommandOrResponse] =
     Behaviors.setup { ctx =>
       ctx.log.info("Creating DatabaseActor")
 
       val loaderRdbFile = new LoadRdbFileTrait {
         override val context: ActorContext[CommandOrResponse] = ctx
-        override val cmdArgConfig: CmdArgConfig = cmdArgConfig
+        override val cmdArgConfig: CmdArgConfig = cmdConfig
       }
 
       Behaviors.withStash(1000) { buffer =>
@@ -57,19 +51,19 @@ object DatabaseActor {
           case Success(value)     => InternalCommand.InitializationSuccess(value)
           case Failure(exception) => InternalCommand.InitializationFailure(exception)
         }
-        initializing(buffer, cmdArgConfig)
+        initializing(buffer, cmdConfig)
       }
     }
 
   trait DatabaseFullBehaviorTrait extends DatabaseBehaviourContextTrait with HandlerGET with HandlerSET with HandlerKeys with HandlerConfig
   def createDatabaseFullBehaviorTrait(
-      context: ActorContext[CommandOrResponse],
-      store: Database,
-      cmdArgConfig: CmdArgConfig
+      ctx: ActorContext[CommandOrResponse],
+      storeDatabase: Database,
+      cmdConfig: CmdArgConfig
   ): DatabaseFullBehaviorTrait = new DatabaseFullBehaviorTrait {
-    override val context: ActorContext[CommandOrResponse] = context
-    override val store: Database = store
-    override val cmdArgConfig: CmdArgConfig = cmdArgConfig
+    override val context: ActorContext[CommandOrResponse] = ctx
+    override val store: Database = storeDatabase
+    override val cmdArgConfig: CmdArgConfig = cmdConfig
   }
 
   def initializing(
@@ -80,11 +74,7 @@ object DatabaseActor {
       message match {
         case InternalCommand.InitializationSuccess(initStore) =>
           ctx.log.info("Database initialized successfully.")
-          val databaseFullBehaviors = createDatabaseFullBehaviorTrait(
-            context = ctx,
-            store = initStore,
-            cmdArgConfig = cmdArgConfig
-          )
+          val databaseFullBehaviors = createDatabaseFullBehaviorTrait(ctx, initStore, cmdArgConfig)
           val behavior: Behavior[CommandOrResponse] = handler(databaseFullBehaviors)
           buffer.unstashAll(behavior)
 
