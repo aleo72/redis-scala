@@ -1,6 +1,6 @@
 package obakalov.redis.rdb.parser
 
-import obakalov.redis.rdb.models.{RdbValue, RdbFileEntry}
+import obakalov.redis.rdb.models.{RdbFileEntry, RdbValue}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow
 import org.apache.pekko.util.ByteString
@@ -102,7 +102,7 @@ object RdbParser {
     if (state.buffer.length < readBytes) {
       ParserIntermediateResultType.waitForMore(state)
     } else {
-      state.buffer.take(readBytes).iterator.getLong(using java.nio.ByteOrder.BIG_ENDIAN) match {
+      state.buffer.take(readBytes).iterator.getLong(using java.nio.ByteOrder.LITTLE_ENDIAN) match {
         case expireTime if expireTime < 0 =>
           throw new IllegalArgumentException(s"Invalid expire time: $expireTime")
         case expireTime =>
