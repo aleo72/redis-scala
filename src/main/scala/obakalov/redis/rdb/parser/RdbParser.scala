@@ -57,8 +57,12 @@ object RdbParser {
     state.step match {
       case ParsingStep.ReadingHeader =>
         parseHeader(state)
-      case ParsingStep.ReadingOpCode | ParsingStep.ReadOpCode =>
+      case ParsingStep.ReadingOpCode | ParsingStep.ReadOpCode(_) =>
         parseOptCode(state)
+      case ParsingStep.Finished(_) =>
+        // If we are in the Finished step, we should not read more data
+        // This is the end of the parsing process, so we return an empty result
+        ParserIntermediateResultType(state, None, ParsingConsume.CONTINUE)
     }
   }
 
@@ -68,18 +72,26 @@ object RdbParser {
     } else {
       val (newState, optCode) = updateOpCodeInState(state)
       val internalResult: ParserIntermediateResultType = optCode match {
-        case OpCode.EOF                 => parseEOF(newState)
-        case OpCode.SELECT_DB           => parseSelectDb(newState)
-        case OpCode.RESIZE_DB           => parseResizeDb(newState)
-        case OpCode.AUX                 => parseAuxField(newState)
-        case o @ OpCode.MODULE_AUX      => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
-        case o @ OpCode.FUNCTION_PRE_GA => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
-        case o @ OpCode.FUNCTION_PRE_GA => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
-        case o @ OpCode.FUNCTION2       => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
-        case o @ OpCode.SLOT_INFO       => throw new UnsupportedOperationException(s"Redis ${o} are not supported")
-        case OpCode.EXPIRETIME          => parseExpireTime(newState, isMs = false)
-        case OpCode.EXPIRETIME_MS       => parseExpireTime(newState, isMs = true)
-        case OpCode.ENTRY_KEY_VALUE     => parseKeyValueEntry(newState)
+        case OpCode.EOF                => parseEOF(newState)
+        case OpCode.SELECT_DB          => parseSelectDb(newState)
+        case OpCode.RESIZE_DB          => parseResizeDb(newState)
+        case OpCode.AUX                => parseAuxField(newState)
+        case OpCode.MODULE_AUX         => throw new UnsupportedOperationException(s"Redis MODULE_AUX are not supported")
+        case OpCode.FUNCTION_PRE_GA    => throw new UnsupportedOperationException(s"Redis FUNCTION_PRE_GA are not supported")
+        case OpCode.FUNCTION2          => throw new UnsupportedOperationException(s"Redis FUNCTION2 are not supported")
+        case OpCode.SLOT_INFO          => throw new UnsupportedOperationException(s"Redis SLOT_INFO are not supported")
+        case OpCode.EXPIRETIME         => parseExpireTime(newState, isMs = false)
+        case OpCode.EXPIRETIME_MS      => parseExpireTime(newState, isMs = true)
+        case OpCode.ENTRY_KEY_VALUE    => parseKeyValueEntry(newState)
+        case OpCode.ENTRY_LIST         => throw new UnsupportedOperationException("RDB ENTRY_LIST is not supported: TODO")
+        case OpCode.ENTRY_SET          => throw new UnsupportedOperationException("RDB ENTRY_SET is not supported: TODO")
+        case OpCode.ENTRY_SORTED_SET   => throw new UnsupportedOperationException("RDB ENTRY_SORTED_SET is not supported: TODO")
+        case OpCode.ENTRY_SORTED_SET_2 => throw new UnsupportedOperationException("RDB ENTRY_SORTED_SET_2 is not supported: TODO")
+        case OpCode.ENTRY_HASH         => throw new UnsupportedOperationException("RDB ENTRY_HASH is not supported: TODO")
+        case OpCode.ENTRY_MODULE_V1    => throw new UnsupportedOperationException("RDB ENTRY_MODULE_V1 is not supported: TODO")
+        case OpCode.ENTRY_MODULE_V2    => throw new UnsupportedOperationException("RDB ENTRY_MODULE_V2 is not supported: TODO")
+        case OpCode.FREQ               => throw new UnsupportedOperationException("RDB FREQ is not supported: TODO")
+        case OpCode.IDLE               => throw new UnsupportedOperationException("RDB IDLE is not supported: TODO")
       }
       internalResult
     }

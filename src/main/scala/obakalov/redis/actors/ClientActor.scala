@@ -77,6 +77,9 @@ object ClientActor {
           ctx.log.info("Client disconnected, stopping actor.")
           queue.complete()
           Behaviors.stopped
+        case other =>
+          // todo not finished
+          throw new IllegalArgumentException(s"Unexpected message in idle state: $other")
       }
     }
   }

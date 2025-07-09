@@ -96,6 +96,7 @@ object DatabaseActor {
         case cmd: Command.Set    => handlers.handlerSET(cmd)
         case cmd: Command.Config => handlers.handlerConfig(cmd)
         case cmd: Command.Keys   => handlers.handlerKeys(cmd)
+        case cmd                 => throw new IllegalArgumentException(s"Unknown command: $cmd")
       }
     }
 
