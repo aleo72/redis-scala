@@ -1,6 +1,11 @@
 package obakalov.redis
 
-case class CmdArgConfig(port: Int = 6379, dir: Option[String] = None, dbfilename: Option[String] = None)
+case class CmdArgConfig(
+    port: Int = 6379,
+    dir: Option[String] = None,
+    dbfilename: Option[String] = None,
+    countDatabases: Int = 16
+)
 
 object CmdArgConfigParser {
   def parse(args: Array[String]): CmdArgConfig = {
@@ -21,6 +26,14 @@ object CmdArgConfigParser {
         .action((f, c) => c.copy(dbfilename = Some(f)))
         .text("Name of the database file (default: dump.rdb)")
         .validate(f => if (f.nonEmpty) success else failure("Database filename cannot be empty"))
+
+      opt[Int]("countDatabases")
+        .action((c, cfg) => cfg.copy(countDatabases = c))
+        .text("Number of databases to create (default: 16)")
+        .validate(c =>
+          if (c > 0) success
+          else failure("Number of databases must be greater than 0")
+        )
 
     }
 

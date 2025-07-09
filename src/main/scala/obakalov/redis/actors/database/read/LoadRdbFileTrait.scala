@@ -9,9 +9,9 @@ import org.apache.pekko.actor.typed.scaladsl.ActorContext
 import org.apache.pekko.stream.IOResult
 import org.apache.pekko.stream.scaladsl.{Flow, Source}
 import org.apache.pekko.util.ByteString
-
+import obakalov.redis.rdb.RedisDataBaseStore
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.{Future}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 trait LoadRdbFileTrait {
@@ -20,21 +20,25 @@ trait LoadRdbFileTrait {
 
   val logger = org.slf4j.LoggerFactory.getLogger(this.getClass)
 
-  def loadRdbFile(): Future[Database] = {
+  def loadRdbFile(): Future[RedisDataBaseStore] = {
 
     val filePath: Option[String] = for {
       realDir <- cmdArgConfig.dir
       dbFileName <- cmdArgConfig.dbfilename
     } yield s"$realDir/$dbFileName"
-
+    val initStore: RedisDataBaseStore = createInitRedisDataBaseStore(cmdArgConfig)
     if (filePath.isEmpty) {
-      Future.successful(TrieMap.empty[String, (Array[Byte], Option[Long])])
+      Future.successful(initStore)
     } else {
-      loadRdbFileFromDisk(filePath.get)
+      loadRdbFileFromDisk(initStore, filePath.get)
     }
   }
 
-  private def loadRdbFileFromDisk(filePath: String): Future[Database] = {
+  private def createInitRedisDataBaseStore(cmdArgConfig: CmdArgConfig): RedisDataBaseStore = {
+    new RedisDataBaseStore(cmdArgConfig)
+  }
+
+  private def loadRdbFileFromDisk(initStore: RedisDataBaseStore, filePath: String): Future[RedisDataBaseStore] = {
     given ec: scala.concurrent.ExecutionContext = context.executionContext
 
     given system: org.apache.pekko.actor.typed.ActorSystem[Nothing] = context.system
@@ -42,40 +46,30 @@ trait LoadRdbFileTrait {
     val path = java.nio.file.Paths.get(filePath)
     if (!java.nio.file.Files.exists(path)) {
       context.log.warn(s"RDB file not found at path: $filePath")
-      return Future.successful(TrieMap.empty[String, (Array[Byte], Option[Long])])
+      return Future.successful(initStore)
     } else {
       context.log.info(s"Loading RDB file from path: $filePath")
     }
 
     val source = org.apache.pekko.stream.scaladsl.FileIO.fromPath(java.nio.file.Paths.get(filePath))
-    val rdbFlow: Flow[ByteString, RedisEntry, ?] = RdbParser.parserFlow()
-    val result: Future[Database] = source
+    val rdbFlow: Flow[ByteString, RdbFileEntry, ?] = RdbParser.parserFlow()
+    val result: Future[RedisDataBaseStore] = source
       .via(rdbFlow)
-      .runFold(TrieMap.empty[String, (Array[Byte], Option[Long])]) { (db, redisEntry) =>
+      .runFold(initStore) { (store, redisEntry) =>
         //        logger.info(s"Parsed entry: ${redisEntry}")
         redisEntry match {
-          case RedisEntry.ResizeDb(dbNumber, dbHashTableSize, expireTimeHashTableSize) =>
+          case RdbFileEntry.ResizeDb(dbNumber, dbHashTableSize, expireTimeHashTableSize) =>
             logger.info(s"Resizing database $dbNumber with hash table size $dbHashTableSize and expiry time size $expireTimeHashTableSize")
-            db // No action needed for resizing in this context
+            store // No action needed for resizing in this context
 
-          case RedisEntry.AuxField(key, value) =>
+          case RdbFileEntry.AuxField(key, value) =>
             logger.info(s"Auxiliary field: $key = $value")
-            db // No action needed for auxiliary fields in this context
+            store // No action needed for auxiliary fields in this context
 
-          case RedisEntry.RedisKeyValue(key, rdbValue, expireAt, dbNumber) =>
-            logger.info(s"Redis key-value pair: $key = $rdbValue with expiry at $expireAt in DB $dbNumber")
-
-            val valueForDB = rdbValue match {
-              case RdbValue.RdbValue(value)  => value
-              case RdbValue.RdbInt(value)    => ???
-              case RdbValue.RdbList(items)   => ???
-              case RdbValue.RdbSet(members)  => ???
-              case RdbValue.RdbZSet(entries) => ???
-              case RdbValue.RdbHash(fields)  => ???
-            }
-
-            db.update(key, (valueForDB, expireAt))
-            db
+          case kv: RdbFileEntry.RedisKeyValue =>
+            logger.info(s"Redis key-value pair: $kv")
+            store.update(kv)
+            store
         }
 
       }

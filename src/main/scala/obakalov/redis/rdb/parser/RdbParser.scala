@@ -1,6 +1,6 @@
 package obakalov.redis.rdb.parser
 
-import obakalov.redis.rdb.models.{RdbValue, RedisEntry}
+import obakalov.redis.rdb.models.{RdbValue, RdbFileEntry}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow
 import org.apache.pekko.util.ByteString
@@ -20,19 +20,19 @@ object RdbParser {
     case CONTINUE
     case WAIT_FOR_MORE
 
-  case class ParserIntermediateResultType(state: ParserState, entry: Option[RedisEntry], isContinue: ParsingConsume)
+  case class ParserIntermediateResultType(state: ParserState, entry: Option[RdbFileEntry], isContinue: ParsingConsume)
   object ParserIntermediateResultType {
     def waitForMore(state: ParserState): ParserIntermediateResultType =
       ParserIntermediateResultType(state, None, ParsingConsume.WAIT_FOR_MORE)
   }
 
-  def parserFlow(): Flow[ByteString, RedisEntry, ?] =
+  def parserFlow(): Flow[ByteString, RdbFileEntry, ?] =
     Flow[ByteString].statefulMapConcat { () =>
       var state = ParserState(ParsingStep.ReadingHeader)
 
       (chunk: ByteString) => {
         state = state.append(chunk)
-        var results = Vector.empty[RedisEntry]
+        var results = Vector.empty[RdbFileEntry]
         var isNeedToContinue: ParsingConsume = ParsingConsume.CONTINUE
         while (ParsingConsume.CONTINUE == isNeedToContinue) {
           try {
@@ -116,10 +116,9 @@ object RdbParser {
       (key, stateAfterKey) <- readString(state)
       (value, stateAfterValue) <- readStringEncoded(stateAfterKey)
     } yield {
-      val entry = RedisEntry.RedisKeyValue(
+      val entry = RdbFileEntry.RedisKeyValue(
         key = key,
-        value = RdbValue.RdbValue(value),
-        expireAt = stateAfterValue.nextExpiry,
+        value = RdbValue.RdbBinary(value, stateAfterValue.nextExpiry),
         dbNumber = stateAfterValue.currentDb
       )
       val newState = stateAfterValue.copy(
@@ -136,7 +135,7 @@ object RdbParser {
       (value, stateAfterValue) <- readString(stateAfterKey)
     } yield {
       val newState = stateAfterValue.consume(0, ParsingStep.ReadingOpCode)
-      val entry = RedisEntry.AuxField(key, value)
+      val entry = RdbFileEntry.AuxField(key, value)
       ParserIntermediateResultType(newState, Option(entry), ParsingConsume.CONTINUE)
     }
   ).getOrElse(ParserIntermediateResultType.waitForMore(state))
@@ -147,7 +146,7 @@ object RdbParser {
       (dbExpiresSize, stateAfterExpiresSize) <- readLength(stateAfterHashSize)
     } yield {
       val newState = stateAfterExpiresSize.consume(0, ParsingStep.ReadingOpCode)
-      val entry = RedisEntry.ResizeDb(
+      val entry = RdbFileEntry.ResizeDb(
         dbNumber = newState.currentDb,
         dbHashTableSize = dbHashSize,
         expireTimeHashTableSize = dbExpiresSize

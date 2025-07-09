@@ -1,6 +1,7 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
+import obakalov.redis.rdb.RedisDataBaseStore
 import obakalov.redis.actors.database.HandlerKeys
 import obakalov.redis.actors.database.read.LoadRdbFileTrait
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
@@ -13,16 +14,15 @@ import scala.util.{Failure, Success}
 object DatabaseActor {
 
 //  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
-  type Database = TrieMap[String, (Array[Byte], Option[Long])]
 
   enum InternalCommand:
-    case InitializationSuccess(initStore: Database)
+    case InitializationSuccess(initStore: RedisDataBaseStore)
     case InitializationFailure(exception: Throwable)
 
   enum Command:
-    case Get(key: String, replyTo: ActorRef[Response])
-    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response])
-    case Keys(pattern: String, replyTo: ActorRef[Response])
+    case Get(key: String, replyTo: ActorRef[Response], db: Int = 0)
+    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response], db: Int = 0)
+    case Keys(pattern: String, replyTo: ActorRef[Response], db: Int = 0)
     case Config(get: Option[String], set: Option[(String, String)], replyTo: ActorRef[Response])
 
   enum Response:
@@ -46,7 +46,7 @@ object DatabaseActor {
       }
 
       Behaviors.withStash(1000) { buffer =>
-        val dbFuture: Future[Database] = loaderRdbFile.loadRdbFile()
+        val dbFuture: Future[RedisDataBaseStore] = loaderRdbFile.loadRdbFile()
         ctx.pipeToSelf(dbFuture) {
           case Success(value)     => InternalCommand.InitializationSuccess(value)
           case Failure(exception) => InternalCommand.InitializationFailure(exception)
@@ -58,11 +58,11 @@ object DatabaseActor {
   trait DatabaseFullBehaviorTrait extends DatabaseBehaviourContextTrait with HandlerGET with HandlerSET with HandlerKeys with HandlerConfig
   def createDatabaseFullBehaviorTrait(
       ctx: ActorContext[CommandOrResponse],
-      storeDatabase: Database,
+      storeDatabase: RedisDataBaseStore,
       cmdConfig: CmdArgConfig
   ): DatabaseFullBehaviorTrait = new DatabaseFullBehaviorTrait {
     override val context: ActorContext[CommandOrResponse] = ctx
-    override val store: Database = storeDatabase
+    override val store: RedisDataBaseStore = storeDatabase
     override val cmdArgConfig: CmdArgConfig = cmdConfig
   }
 

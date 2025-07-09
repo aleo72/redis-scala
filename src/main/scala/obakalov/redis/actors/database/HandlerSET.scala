@@ -1,12 +1,13 @@
 package obakalov.redis.actors.database
-import obakalov.redis.actors.DatabaseActor.CommandOrResponse
+import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.DatabaseActor
+import obakalov.redis.actors.DatabaseActor.CommandOrResponse
+import obakalov.redis.actors.database.DatabaseBehaviourContextTrait
+import obakalov.redis.rdb.models.RdbValue.RdbBinary
+import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 
 import scala.collection.concurrent.TrieMap
-import obakalov.redis.CmdArgConfig
-import obakalov.redis.actors.database.DatabaseBehaviourContextTrait
-import org.apache.pekko.actor.typed.Behavior
 
 trait HandlerSET {
   self: DatabaseBehaviourContextTrait =>
@@ -19,7 +20,7 @@ trait HandlerSET {
     context.log.info(s"Setting value for key: ${cmd.key}")
     val expiryTime = cmd.expired.map(pxValue => pxValue + System.currentTimeMillis())
 
-    store.update(cmd.key, (cmd.value.getOrElse(Array.empty[Byte]), expiryTime))
+    store.update(cmd.db, cmd.key, RdbBinary(cmd.value.getOrElse(Array.emptyByteArray), expiryTime))
 
     cmd.replyTo ! Response.Ok
     Behaviors.same[CommandOrResponse]

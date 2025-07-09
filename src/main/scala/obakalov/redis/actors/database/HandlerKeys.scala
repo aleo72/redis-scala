@@ -33,8 +33,8 @@ trait HandlerKeys {
       cmd: DatabaseActor.Command.Keys
   ): Behavior[CommandOrResponse] = {
     context.log.info(s"Getting keys with pattern: ${cmd.pattern}")
-    context.log.info(s"Database size: ${store.size} keys: ${store.keys.mkString(", ")}")
-    val keys = store.keys.filter(globPredicate(cmd.pattern))
+    context.log.info(s"Database size: ${store.size} keys: ${store.keys(cmd.db).mkString(", ")}")
+    val keys = store.keys(cmd.db).filter(globPredicate(cmd.pattern))
     context.log.info(s"Found keys: ${keys.mkString(", ")}")
     cmd.replyTo ! Response.ValueBulkString(keys.toSeq.map(_.getBytes))
     Behaviors.same[CommandOrResponse]
