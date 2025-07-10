@@ -1,19 +1,18 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
-import obakalov.redis.rdb.RedisDataBaseStore
 import obakalov.redis.actors.database.HandlerKeys
 import obakalov.redis.actors.database.read.LoadRdbFileTrait
+import obakalov.redis.rdb.RedisDataBaseStore
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
-import scala.collection.concurrent.TrieMap
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 object DatabaseActor {
 
-//  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
+  val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
   enum InternalCommand:
     case InitializationSuccess(initStore: RedisDataBaseStore)

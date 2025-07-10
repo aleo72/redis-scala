@@ -1,40 +1,40 @@
 package obakalov.redis.actors
 
-import org.apache.pekko.actor.typed.scaladsl.{Behaviors, StashBuffer}
+import obakalov.redis.actors.client.*
+import obakalov.redis.actors.client.ExpectedResponseEnum.*
+import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
-import obakalov.redis.commands.ExpectedResponse.*
-import obakalov.redis.commands.{Protocol, ProtocolMessage, RedisCommand}
 
 object ClientActor {
-  sealed trait Command
 
-  object Command {
-    case class ReceivedData(data: ByteString) extends Command
-    case class SendToClient(data: ByteString) extends Command
-    case object Disconnected extends Command
-  }
+  enum Command:
+    case ReceivedData(data: ByteString)
+    case SendToClient(data: ByteString)
+    case Disconnected
 
   sealed trait Response
 
-  sealed trait DbResponse extends Response
-
-  object DbResponse {
-    case class Value(value: Option[String]) extends DbResponse
-    case object Cleared extends DbResponse
-    case object Ok extends DbResponse
-    case class Error(message: String) extends DbResponse
-  }
+  enum DbResponse extends Response:
+    case Value(value: Option[String])
+    case Cleared
+    case Ok
+    case Error(message: String)
 
   type ComandOrResponse = Command | DatabaseActor.Response
 
-  def apply(queue: SourceQueueWithComplete[ByteString], dbActor: ActorRef[DatabaseActor.Command]): Behavior[ComandOrResponse] =
-    Behaviors.withStash(1000) { buffer => idle(queue, dbActor, buffer) }
+  def apply(
+      queue: SourceQueueWithComplete[ByteString],
+      dbActor: ActorRef[DatabaseActor.Command],
+      replicationActor: ActorRef[ReplicationActor.Command]
+  ): Behavior[ComandOrResponse] =
+    Behaviors.withStash(1000) { buffer => idle(queue, dbActor, replicationActor, buffer) }
 
   private def idle(
       queue: SourceQueueWithComplete[ByteString],
       dbActor: ActorRef[DatabaseActor.Command],
+      replicationActor: ActorRef[ReplicationActor.Command],
       buffer: StashBuffer[ComandOrResponse]
   ): Behavior[ComandOrResponse] = {
     Behaviors.receive { (ctx, message) =>
@@ -46,24 +46,7 @@ object ClientActor {
           message match {
             case Some(msg) =>
               ctx.log.info(s"Parsed message: $msg")
-              RedisCommand.values.find(_.logic.canHandle(msg)) match {
-                case Some(redisCommand) =>
-                  ctx.log.info(s"Handling command: ${redisCommand.toString}")
-                  val areYourWaitingResponse = redisCommand.logic.handle(msg, queue, dbActor, ctx.self, ctx.log)
-                  areYourWaitingResponse match {
-                    case ExpectedResponse =>
-                      ctx.log.info("Waiting for response from database actor.")
-                      working(queue, dbActor, buffer)
-                    case NoResponse =>
-                      ctx.log.info("No response expected, returning to idle state.")
-                      idle(queue, dbActor, buffer)
-                  }
-                case None =>
-                  ctx.log.error(s"Unknown command: $msg")
-                  // Optionally send an error response back to the client
-                  queue.offer(ByteString(s"-ERR unknown command '${msg.statusCodeString}'\r\n"))
-                  Behaviors.same
-              }
+              processProtocolMessage(msg, queue, dbActor, replicationActor, ctx, buffer)
             case None =>
               ctx.log.error("Failed to parse message from client.")
               Behaviors.same
@@ -84,9 +67,42 @@ object ClientActor {
     }
   }
 
+  private def processProtocolMessage(
+      msg: ProtocolMessage,
+      queue: SourceQueueWithComplete[ByteString],
+      dbActor: ActorRef[DatabaseActor.Command],
+      replicationActor: ActorRef[ReplicationActor.Command],
+      ctx: ActorContext[ComandOrResponse],
+      buffer: StashBuffer[ComandOrResponse]
+  ): Behavior[ComandOrResponse] = {
+    RedisCommand.values.find(_.logic.canHandle(msg)) match {
+      case None =>
+        ctx.log.error(s"Unknown command: $msg")
+        // Optionally send an error response back to the client
+        queue.offer(ByteString(s"-ERR unknown command '${msg.statusCodeString}'\r\n"))
+        Behaviors.same
+      case Some(redisCommand) =>
+        val areYourWaitingResponse: ExpectedResponseEnum = redisCommand match {
+          case simpleCommand: RedisSimpleCommand           => simpleCommand.logic.handle(msg, queue, ctx.log)
+          case databaseCommand: RedisDatabaseCommand       => databaseCommand.logic.handle(msg, queue, dbActor, ctx.self, ctx.log)
+          case replicationCommand: RedisReplicationCommand => replicationCommand.logic.handle(msg, queue, dbActor, replicationActor, ctx.self, ctx.log)
+        }
+        areYourWaitingResponse match {
+          case ExpectedResponse =>
+            ctx.log.info("Waiting for response from database actor.")
+            working(queue, dbActor, replicationActor, buffer)
+          case NoResponse =>
+            ctx.log.info("No response expected, returning to idle state.")
+            idle(queue, dbActor, replicationActor, buffer)
+        }
+    }
+
+  }
+
   private def working(
       queue: SourceQueueWithComplete[ByteString],
       dbActor: ActorRef[DatabaseActor.Command],
+      replicationActor: ActorRef[ReplicationActor.Command],
       buffer: StashBuffer[ComandOrResponse]
   ): Behavior[ComandOrResponse] =
     Behaviors.receive { (ctx, message) =>
@@ -94,14 +110,14 @@ object ClientActor {
         case DatabaseActor.Response.Ok =>
           ctx.log.info("Received OK response from database actor.")
           queue.offer(ByteString("+OK\r\n"))
-          buffer.unstashAll(idle(queue, dbActor, buffer))
+          buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
         case DatabaseActor.Response.Value(value) =>
           ctx.log.info(s"Received Value response from database actor: $value")
           value match {
             case Some(v) => queue.offer(ByteString('+') ++ ByteString(v) ++ ByteString("\r\n"))
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
-          buffer.unstashAll(idle(queue, dbActor, buffer))
+          buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
         case DatabaseActor.Response.ValueBulkString(values) =>
           ctx.log.info("Received ValueBulkString response from database actor.")
           val bulkStringResponse: ByteString =
@@ -114,7 +130,7 @@ object ClientActor {
               )(_ ++ _)
           ctx.log.info(s"Bulk string response: ${bulkStringResponse.utf8String.trim}")
           queue.offer(ByteString(bulkStringResponse))
-          buffer.unstashAll(idle(queue, dbActor, buffer))
+          buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
         case Command.Disconnected =>
           ctx.log.info("Client disconnected, stopping actor.")
           queue.complete()

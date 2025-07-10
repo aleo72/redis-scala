@@ -1,14 +1,14 @@
-package obakalov.redis.commands.logic
+package obakalov.redis.actors.client.logic
 
+import obakalov.redis.actors.client.{CommandDetectTrait, DatabaseCommandHandler, ExpectedResponseEnum, ProtocolMessage}
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
 import obakalov.redis.actors.{ClientActor, DatabaseActor}
-import obakalov.redis.commands.{CommandDetectTrait, CommandHandler, ExpectedResponse, ProtocolMessage}
 
 import java.io.OutputStream
 
-object SetLogic extends CommandDetectTrait with CommandHandler {
+object SetLogic extends CommandDetectTrait with DatabaseCommandHandler {
 
   override def commandName: String = "SET"
 
@@ -20,7 +20,7 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
       databaseActor: ActorRef[DatabaseActor.Command],
       replyTo: ActorRef[DatabaseActor.Response],
       log: org.slf4j.Logger
-  ): ExpectedResponse = {
+  ): ExpectedResponseEnum = {
     // Extract the key and value from the command
     command.multiBulkMessage match {
       case Some(Seq(_, keyM, valueM)) =>
@@ -28,7 +28,7 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
         val value = valueM.bulkMessageString
         log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
         databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None, replyTo = replyTo)
-        ExpectedResponse.ExpectedResponse
+        ExpectedResponseEnum.ExpectedResponse
       case Some(Seq(_, keyM, valueM, paramM, paramValueM)) if validParamsPXEX.contains(paramM.bulkMessageString.toUpperCase) =>
         val key = keyM.bulkMessageString
         val value = valueM.bulkMessageString
@@ -48,17 +48,17 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
         maybePxValue match {
           case pxOpt @ Some(pxValue) if pxValue >= 0 =>
             databaseActor ! DatabaseActor.Command.Set(key, valueM.bulkMessage, pxOpt, replyTo)
-            ExpectedResponse.ExpectedResponse
+            ExpectedResponseEnum.ExpectedResponse
           case Some(pxValue) if pxValue < 0 =>
             queue.offer(ByteString("-ERR value for 'px' or 'ex' parameter must be a non-negative integer\r\n"))
-            ExpectedResponse.NoResponse
+            ExpectedResponseEnum.NoResponse
           case _ =>
             queue.offer(ByteString("-ERR invalid value for 'px' or 'ex' parameter\r\n"))
-            ExpectedResponse.NoResponse
+            ExpectedResponseEnum.NoResponse
         }
       case _ =>
         queue.offer(ByteString("-ERR wrong number of arguments for 'set' command\r\n"))
-        ExpectedResponse.NoResponse
+        ExpectedResponseEnum.NoResponse
     }
   }
 }

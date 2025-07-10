@@ -1,4 +1,4 @@
-package obakalov.redis.commands
+package obakalov.redis.actors.client
 
 import obakalov.redis.exceptions.{RedisAskDataException, RedisBusyException, RedisClusterException, RedisInputStreamException, RedisMovedDataException}
 import obakalov.redis.util.{RedisInputStream, SafeEncoder}

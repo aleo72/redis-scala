@@ -25,6 +25,7 @@ object ServerActor {
     }
 
     val dbActor = context.spawn(DatabaseActor(cmdArgConfig), "database-actor")
+    val replicationActor = context.spawn(ReplicationActor(dbActor), "replication-actor")
 
     Behaviors.receiveMessage { case NewClient(connection) =>
       val nameClient = s"client-${connection.remoteAddress.getPort}"
@@ -35,7 +36,7 @@ object ServerActor {
         .queue[ByteString](bufferSize = 1024, overflowStrategy = org.apache.pekko.stream.OverflowStrategy.dropHead)
         .preMaterialize()
 
-      val handler = context.spawn(ClientActor(queue, dbActor), nameClient)
+      val handler = context.spawn(ClientActor.apply(queue, dbActor, replicationActor), nameClient)
 
       val sink = Sink.foreach[ByteString] { data =>
         handler ! ClientActor.Command.ReceivedData(data)
