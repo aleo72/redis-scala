@@ -36,7 +36,7 @@ trait HandlerKeys {
     context.log.info(s"Database size: ${store.size} keys: ${store.keys(cmd.db).mkString(", ")}")
     val keys = store.keys(cmd.db).filter(globPredicate(cmd.pattern))
     context.log.info(s"Found keys: ${keys.mkString(", ")}")
-    cmd.replyTo ! ClientActor.ExpectingAnswers.ValueBulkString(keys.toSeq.map(_.getBytes))
+    cmd.replyTo ! ClientActor.ExpectingAnswers.ArrayBulkString(keys.toSeq.map(_.getBytes))
     Behaviors.same[CommandOrResponse]
   }
 

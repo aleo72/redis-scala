@@ -7,6 +7,8 @@ import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
 
+import java.nio.charset.StandardCharsets
+
 object ClientActor {
 
   enum Command:
@@ -15,13 +17,16 @@ object ClientActor {
     case Disconnected
 
   enum ExpectingAnswers:
-    case Value(value: Option[Array[Byte]])
-    case ValueBulkString(values: Seq[Array[Byte]])
+    case BulkString(value: Option[Array[Byte]])
+    case MultiBulkString(value: Seq[Array[Byte]])
+    case ArrayBulkString(values: Seq[Array[Byte]])
     case Cleared
     case Ok
     case Error(message: String)
 
   type ComandOrResponse = Command | ExpectingAnswers
+
+  private val plus = ByteString("+")
 
   def apply(
       queue: SourceQueueWithComplete[ByteString],
@@ -98,6 +103,11 @@ object ClientActor {
 
   }
 
+  private def createBulkString(v: Array[Byte]): ByteString = {
+    if (v == null) ByteString("$-1\r\n")
+    else ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n")
+  }
+
   private def working(
       queue: SourceQueueWithComplete[ByteString],
       dbActor: ActorRef[DatabaseActor.Command],
@@ -110,18 +120,25 @@ object ClientActor {
           ctx.log.info("Received OK response from database actor.")
           queue.offer(ByteString("+OK\r\n"))
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
-        case ClientActor.ExpectingAnswers.Value(value) =>
+        case ClientActor.ExpectingAnswers.BulkString(value) =>
           ctx.log.info(s"Received Value response from database actor: $value")
           value match {
             case Some(v) => queue.offer(ByteString('+') ++ ByteString(v) ++ ByteString("\r\n"))
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
-        case ClientActor.ExpectingAnswers.ValueBulkString(values) =>
+        case ClientActor.ExpectingAnswers.MultiBulkString(values) =>
+          ctx.log.info("Received MultiBulkString response from database actor.")
+          values.foreach { v =>
+            ctx.log.info(s"PRINT: ${new String(v, StandardCharsets.UTF_8)}")
+            queue.offer(createBulkString(v))
+          }
+          buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
+        case ClientActor.ExpectingAnswers.ArrayBulkString(values) =>
           ctx.log.info("Received ValueBulkString response from database actor.")
           val bulkStringResponse: ByteString =
             values
-              .map(v => ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n"))
+              .map(createBulkString)
               .foldLeft(
                 if (values.isEmpty) ByteString("*0\r\n")
 //                else if (values.length == 1) ByteString.empty

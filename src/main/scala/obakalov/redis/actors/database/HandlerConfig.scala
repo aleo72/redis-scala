@@ -20,15 +20,15 @@ trait HandlerConfig {
       case Some("dir") =>
         context.log.info(s"Current directory is: ${cmdArgConfig.dir.getOrElse("not set")}")
         val response: ClientActor.ExpectingAnswers = cmdArgConfig.dir match {
-          case Some(dir) => ClientActor.ExpectingAnswers.ValueBulkString(Seq("dir".getBytes, dir.getBytes))
-          case None      => ClientActor.ExpectingAnswers.Value(None)
+          case Some(dir) => ClientActor.ExpectingAnswers.ArrayBulkString(Seq("dir".getBytes, dir.getBytes))
+          case None      => ClientActor.ExpectingAnswers.BulkString(None)
         }
         cmd.replyTo ! response
       case Some("dbfilename") =>
         context.log.info(s"Current database filename is: ${cmdArgConfig.dbfilename.getOrElse("not set")}")
         val response = cmdArgConfig.dbfilename match {
-          case Some(filename) => ClientActor.ExpectingAnswers.ValueBulkString(Seq("dbfilename".getBytes, filename.getBytes))
-          case None           => ClientActor.ExpectingAnswers.Value(None)
+          case Some(filename) => ClientActor.ExpectingAnswers.ArrayBulkString(Seq("dbfilename".getBytes, filename.getBytes))
+          case None           => ClientActor.ExpectingAnswers.BulkString(None)
         }
         cmd.replyTo ! response
       case _ =>

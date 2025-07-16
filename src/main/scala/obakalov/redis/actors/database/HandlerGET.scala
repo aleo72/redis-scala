@@ -23,7 +23,7 @@ trait HandlerGET {
           throw new RuntimeException(s"Unexpected value type for key: ${cmd.key}")
       }
 
-    cmd.replyTo ! ClientActor.ExpectingAnswers.Value(value)
+    cmd.replyTo ! ClientActor.ExpectingAnswers.BulkString(value)
     Behaviors.same[CommandOrResponse]
   }
 
