@@ -1,7 +1,7 @@
 package obakalov.redis.actors.database
 import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.DatabaseActor.CommandOrResponse
-import obakalov.redis.actors.DatabaseActor
+import obakalov.redis.actors.{ClientActor, DatabaseActor}
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 
 import scala.collection.concurrent.TrieMap
@@ -19,21 +19,21 @@ trait HandlerConfig {
     cmd.get match {
       case Some("dir") =>
         context.log.info(s"Current directory is: ${cmdArgConfig.dir.getOrElse("not set")}")
-        val response: Response = cmdArgConfig.dir match {
-          case Some(dir) => Response.ValueBulkString(Seq("dir".getBytes, dir.getBytes))
-          case None      => Response.Value(None)
+        val response: ClientActor.ExpectingAnswers = cmdArgConfig.dir match {
+          case Some(dir) => ClientActor.ExpectingAnswers.ValueBulkString(Seq("dir".getBytes, dir.getBytes))
+          case None      => ClientActor.ExpectingAnswers.Value(None)
         }
         cmd.replyTo ! response
       case Some("dbfilename") =>
         context.log.info(s"Current database filename is: ${cmdArgConfig.dbfilename.getOrElse("not set")}")
         val response = cmdArgConfig.dbfilename match {
-          case Some(filename) => Response.ValueBulkString(Seq("dbfilename".getBytes, filename.getBytes))
-          case None           => Response.Value(None)
+          case Some(filename) => ClientActor.ExpectingAnswers.ValueBulkString(Seq("dbfilename".getBytes, filename.getBytes))
+          case None           => ClientActor.ExpectingAnswers.Value(None)
         }
         cmd.replyTo ! response
       case _ =>
         context.log.error(s"Unknown config key: ${cmd.get.getOrElse("unknown")}")
-        cmd.replyTo ! Response.Error("Unknown config key")
+        cmd.replyTo ! ClientActor.ExpectingAnswers.Error("Unknown config key")
     }
     Behaviors.same[CommandOrResponse]
   }

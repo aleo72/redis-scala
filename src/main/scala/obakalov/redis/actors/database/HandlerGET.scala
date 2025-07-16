@@ -1,5 +1,6 @@
 package obakalov.redis.actors.database
 
+import obakalov.redis.actors.ClientActor
 import obakalov.redis.rdb.models.RdbValue.RdbBinary
 import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
@@ -22,7 +23,7 @@ trait HandlerGET {
           throw new RuntimeException(s"Unexpected value type for key: ${cmd.key}")
       }
 
-    cmd.replyTo ! Response.Value(value)
+    cmd.replyTo ! ClientActor.ExpectingAnswers.Value(value)
     Behaviors.same[CommandOrResponse]
   }
 

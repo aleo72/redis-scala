@@ -1,13 +1,12 @@
 package obakalov.redis.actors
 
-import obakalov.redis.actors.DatabaseActor.Response
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
 object ReplicationActor {
 
   enum Command:
-    case Info(replyTo: ActorRef[Response])
+    case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
 //    case StartReplication(masterHost: String, masterPort: Int)
 //    case StopReplication()
 //    case SendData()
@@ -19,7 +18,7 @@ object ReplicationActor {
       context.log.info("ReplicationActor started")
 
       Behaviors.receiveMessage { case Command.Info(replyTo) =>
-        replyTo ! Response.Ok // Placeholder for actual info response
+        replyTo ! ClientActor.ExpectingAnswers.Ok // Placeholder for actual info response
         Behaviors.same
       }
 

@@ -3,7 +3,7 @@ package obakalov.redis.actors.client.logic
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
-import obakalov.redis.actors.DatabaseActor
+import obakalov.redis.actors.{ClientActor, DatabaseActor}
 import obakalov.redis.actors.client.{CommandDetectTrait, DatabaseCommandHandler, ExpectedResponseEnum, ProtocolMessage}
 import org.slf4j.Logger
 
@@ -15,7 +15,7 @@ object GetLogic extends CommandDetectTrait with DatabaseCommandHandler {
       command: ProtocolMessage,
       queue: SourceQueueWithComplete[ByteString],
       databaseActor: ActorRef[DatabaseActor.Command],
-      replyTo: ActorRef[DatabaseActor.Response],
+      replyTo: ActorRef[ClientActor.ExpectingAnswers],
       log: Logger
   ): ExpectedResponseEnum =
     command.multiBulkMessage match {

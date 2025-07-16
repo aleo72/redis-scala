@@ -14,15 +14,14 @@ object ClientActor {
     case SendToClient(data: ByteString)
     case Disconnected
 
-  sealed trait Response
-
-  enum DbResponse extends Response:
-    case Value(value: Option[String])
+  enum ExpectingAnswers:
+    case Value(value: Option[Array[Byte]])
+    case ValueBulkString(values: Seq[Array[Byte]])
     case Cleared
     case Ok
     case Error(message: String)
 
-  type ComandOrResponse = Command | DatabaseActor.Response
+  type ComandOrResponse = Command | ExpectingAnswers
 
   def apply(
       queue: SourceQueueWithComplete[ByteString],
@@ -107,18 +106,18 @@ object ClientActor {
   ): Behavior[ComandOrResponse] =
     Behaviors.receive { (ctx, message) =>
       message match {
-        case DatabaseActor.Response.Ok =>
+        case ClientActor.ExpectingAnswers.Ok =>
           ctx.log.info("Received OK response from database actor.")
           queue.offer(ByteString("+OK\r\n"))
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
-        case DatabaseActor.Response.Value(value) =>
+        case ClientActor.ExpectingAnswers.Value(value) =>
           ctx.log.info(s"Received Value response from database actor: $value")
           value match {
             case Some(v) => queue.offer(ByteString('+') ++ ByteString(v) ++ ByteString("\r\n"))
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
-        case DatabaseActor.Response.ValueBulkString(values) =>
+        case ClientActor.ExpectingAnswers.ValueBulkString(values) =>
           ctx.log.info("Received ValueBulkString response from database actor.")
           val bulkStringResponse: ByteString =
             values

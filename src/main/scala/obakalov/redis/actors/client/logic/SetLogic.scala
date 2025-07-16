@@ -18,7 +18,7 @@ object SetLogic extends CommandDetectTrait with DatabaseCommandHandler {
       command: ProtocolMessage,
       queue: SourceQueueWithComplete[ByteString],
       databaseActor: ActorRef[DatabaseActor.Command],
-      replyTo: ActorRef[DatabaseActor.Response],
+      replyTo: ActorRef[ClientActor.ExpectingAnswers],
       log: org.slf4j.Logger
   ): ExpectedResponseEnum = {
     // Extract the key and value from the command

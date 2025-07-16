@@ -26,7 +26,7 @@ trait DatabaseCommandHandler extends GeneralCommandHandler {
       command: ProtocolMessage,
       queue: SourceQueueWithComplete[ByteString],
       databaseActor: ActorRef[DatabaseActor.Command],
-      replyTo: ActorRef[DatabaseActor.Response],
+      replyTo: DatabaseActor.ClientActorExpectingAnswers,
       log: org.slf4j.Logger
   ): ExpectedResponseEnum
 
@@ -51,7 +51,7 @@ trait ReplicationCommandHandler extends GeneralCommandHandler {
       queue: SourceQueueWithComplete[ByteString],
       databaseActor: ActorRef[DatabaseActor.Command],
       replicationActor: ActorRef[ReplicationActor.Command],
-      replyTo: ActorRef[ClientActor.Command],
+      replyTo: ActorRef[ClientActor.ExpectingAnswers],
       log: org.slf4j.Logger
   ): ExpectedResponseEnum
 

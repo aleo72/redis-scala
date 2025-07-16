@@ -1,8 +1,8 @@
 package obakalov.redis.actors.database
 
 import obakalov.redis.CmdArgConfig
-import obakalov.redis.actors.DatabaseActor
 import obakalov.redis.actors.DatabaseActor.*
+import obakalov.redis.actors.{ClientActor, DatabaseActor}
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
@@ -36,7 +36,7 @@ trait HandlerKeys {
     context.log.info(s"Database size: ${store.size} keys: ${store.keys(cmd.db).mkString(", ")}")
     val keys = store.keys(cmd.db).filter(globPredicate(cmd.pattern))
     context.log.info(s"Found keys: ${keys.mkString(", ")}")
-    cmd.replyTo ! Response.ValueBulkString(keys.toSeq.map(_.getBytes))
+    cmd.replyTo ! ClientActor.ExpectingAnswers.ValueBulkString(keys.toSeq.map(_.getBytes))
     Behaviors.same[CommandOrResponse]
   }
 

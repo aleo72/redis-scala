@@ -1,6 +1,6 @@
 package obakalov.redis.actors.database
 import obakalov.redis.CmdArgConfig
-import obakalov.redis.actors.DatabaseActor
+import obakalov.redis.actors.{ClientActor, DatabaseActor}
 import obakalov.redis.actors.DatabaseActor.CommandOrResponse
 import obakalov.redis.actors.database.DatabaseBehaviourContextTrait
 import obakalov.redis.rdb.models.RdbValue.RdbBinary
@@ -22,7 +22,7 @@ trait HandlerSET {
 
     store.update(cmd.db, cmd.key, RdbBinary(cmd.value.getOrElse(Array.emptyByteArray), expiryTime))
 
-    cmd.replyTo ! Response.Ok
+    cmd.replyTo ! ClientActor.ExpectingAnswers.Ok
     Behaviors.same[CommandOrResponse]
   }
 

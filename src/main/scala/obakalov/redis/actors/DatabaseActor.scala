@@ -14,22 +14,17 @@ object DatabaseActor {
 
   val DatabaseKey = org.apache.pekko.actor.typed.receptionist.ServiceKey[CommandOrResponse]("DatabaseActor")
 
+  type ClientActorExpectingAnswers = ActorRef[ClientActor.ExpectingAnswers]
+
   enum InternalCommand:
     case InitializationSuccess(initStore: RedisDataBaseStore)
     case InitializationFailure(exception: Throwable)
 
   enum Command:
-    case Get(key: String, replyTo: ActorRef[Response], db: Int = 0)
-    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ActorRef[Response], db: Int = 0)
-    case Keys(pattern: String, replyTo: ActorRef[Response], db: Int = 0)
-    case Config(get: Option[String], set: Option[(String, String)], replyTo: ActorRef[Response])
-
-  enum Response:
-    case Value(value: Option[Array[Byte]])
-    case ValueBulkString(values: Seq[Array[Byte]])
-    case Cleared
-    case Ok
-    case Error(message: String)
+    case Get(key: String, replyTo: ClientActorExpectingAnswers, db: Int = 0)
+    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long], replyTo: ClientActorExpectingAnswers, db: Int = 0)
+    case Keys(pattern: String, replyTo: ClientActorExpectingAnswers, db: Int = 0)
+    case Config(get: Option[String], set: Option[(String, String)], replyTo: ClientActorExpectingAnswers)
 
   type CommandOrResponse = Command | InternalCommand
 
