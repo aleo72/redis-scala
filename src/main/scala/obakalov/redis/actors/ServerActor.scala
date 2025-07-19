@@ -25,7 +25,7 @@ object ServerActor {
     }
 
     val dbActor = context.spawn(DatabaseActor(cmdArgConfig), "database-actor")
-    val replicationActor = context.spawn(ReplicationActor(dbActor), "replication-actor")
+    val replicationActor = context.spawn(ReplicationActor(cmdArgConfig, dbActor), "replication-actor")
 
     Behaviors.receiveMessage { case NewClient(connection) =>
       val nameClient = s"client-${connection.remoteAddress.getPort}"

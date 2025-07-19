@@ -1,5 +1,6 @@
 package obakalov.redis.actors
 
+import obakalov.redis.CmdArgConfig
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
@@ -13,21 +14,32 @@ object ReplicationActor {
 
   type ReplicationActorBehaviorType = Command
 
-  def apply(dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] =
+  def apply(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] =
     Behaviors.setup { context =>
       context.log.info("ReplicationActor started")
-      val config = ReplicationConfig(
-        role = "master", // Default role, can be changed based on actual replication setup
-        slaves = Seq.empty, // Initially no slaves
-        masterReplicationId = "initial-repl-id",
-        masterReplicationOffset = 0L
-      )
+      val config = createReplicationConfig(cmdArgConfig)
       Behaviors.receiveMessage { case Command.Info(replyTo) =>
         replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString) // Placeholder for actual info response
         Behaviors.same
       }
 
     }
+
+  private def createReplicationConfig(
+      config: CmdArgConfig
+  ): ReplicationConfig = {
+    ReplicationConfig(
+      role = if (config.replicaof.isDefined) "slave" else "master",
+      slaves = Seq.empty, // Initially no slaves
+      masterReplicationId = "",
+      masterReplicationOffset = 0,
+      secondaryReplicationOffset = None,
+      replicationBacklogActive = 0,
+      replicationBacklogSize = 0,
+      replicationBacklogFirstByte = None,
+      replicationBacklogHistlen = None
+    )
+  }
 
   case class ReplicationConfig(
       role: String, // "master" or "slave"

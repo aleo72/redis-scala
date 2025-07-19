@@ -4,7 +4,8 @@ case class CmdArgConfig(
     port: Int = 6379,
     dir: Option[String] = None,
     dbfilename: Option[String] = None,
-    countDatabases: Int = 16
+    countDatabases: Int = 16,
+    replicaof: Option[String] = None
 )
 
 object CmdArgConfigParser {
@@ -35,10 +36,18 @@ object CmdArgConfigParser {
           else failure("Number of databases must be greater than 0")
         )
 
+      opt[String]("replicaof")
+        .action((r, c) => c.copy(replicaof = Some(r)))
+        .text("Replica of another Redis server (format: host port)")
+        .validate(r =>
+          if (r.matches("^[^:]+ \\d+$")) success
+          else failure("Replicaof must be in the format \"host port\"")
+        )
+
     }
 
     val value = parser.parse(args, CmdArgConfig()).getOrElse {
-      throw new IllegalArgumentException("Invalid command line arguments")
+      throw new IllegalArgumentException(s"Invalid command line arguments: ${args.mkString("[", ",", "]")}")
     }
     value
   }
