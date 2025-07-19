@@ -4,6 +4,8 @@ import obakalov.redis.CmdArgConfig
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
+import scala.util.Random
+
 object ReplicationActor {
 
   enum Command:
@@ -31,7 +33,7 @@ object ReplicationActor {
     ReplicationConfig(
       role = if (config.replicaof.isDefined) "slave" else "master",
       slaves = Seq.empty, // Initially no slaves
-      masterReplicationId = "",
+      masterReplicationId = Random.alphanumeric.take(40).mkString, // Generate a random replication ID
       masterReplicationOffset = 0,
       secondaryReplicationOffset = None,
       replicationBacklogActive = 0,
