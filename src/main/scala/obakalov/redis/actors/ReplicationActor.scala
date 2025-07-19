@@ -31,7 +31,7 @@ object ReplicationActor {
       config: CmdArgConfig
   ): ReplicationConfig = {
     ReplicationConfig(
-      role = if (config.replicaof.isDefined) "slave" else "master",
+      role = if (config.replicaof.isEmpty) "master" else "slave",
       slaves = Seq.empty, // Initially no slaves
       masterReplicationId = Random.alphanumeric.take(40).mkString, // Generate a random replication ID
       masterReplicationOffset = 0,
@@ -67,12 +67,13 @@ object ReplicationActor {
       master_replid: String, // Master replication ID
       master_repl_offset: Long // Master replication offset
   ) {
-    def toBulkString: Seq[Array[Byte]] =
+    def toBulkString: Seq[Array[Byte]] = Seq(
       Seq(
-        s"role:$role",
-        s"connected_slaves:$connected_slaves",
         s"master_replid:$master_replid",
-        s"master_repl_offset:$master_repl_offset"
-      ).map(_.getBytes("UTF-8"))
+        s"master_repl_offset:$master_repl_offset",
+        s"role:$role",
+        s"connected_slaves:$connected_slaves"
+      ).mkString("\n")
+    ).map(_.getBytes("UTF-8"))
   }
 }

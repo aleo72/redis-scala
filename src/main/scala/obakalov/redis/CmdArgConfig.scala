@@ -1,5 +1,7 @@
 package obakalov.redis
 
+import ch.qos.logback.classic.Logger
+
 case class CmdArgConfig(
     port: Int = 6379,
     dir: Option[String] = None,
@@ -9,6 +11,7 @@ case class CmdArgConfig(
 )
 
 object CmdArgConfigParser {
+
   def parse(args: Array[String]): CmdArgConfig = {
     val parser = new scopt.OptionParser[CmdArgConfig]("codecrafters-redis") {
       head("codecrafters-redis", "0.1.0")
@@ -37,7 +40,7 @@ object CmdArgConfigParser {
         )
 
       opt[String]("replicaof")
-        .action((r, c) => c.copy(replicaof = Some(r)))
+        .action((r, c) => c.copy(replicaof = Some(r).filter(_.nonEmpty)))
         .text("Replica of another Redis server (format: host port)")
         .validate(r =>
           if (r.matches("^[^:]+ \\d+$")) success
@@ -49,6 +52,7 @@ object CmdArgConfigParser {
     val value = parser.parse(args, CmdArgConfig()).getOrElse {
       throw new IllegalArgumentException(s"Invalid command line arguments: ${args.mkString("[", ",", "]")}")
     }
+    println(s"Parsed command line arguments: $value")
     value
   }
 }
