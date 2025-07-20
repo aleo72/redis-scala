@@ -1,15 +1,20 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
+import obakalov.redis.actors.ReplicationActor.Command
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.stream.scaladsl.{Flow, Source, Tcp, Sink}
+import org.apache.pekko.util.ByteString
 
+import scala.concurrent.Future
 import scala.util.Random
 
 object ReplicationActor {
 
   enum Command:
     case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
+    case SendPingToMaster()
   //    case StartReplication(masterHost: String, masterPort: Int)
   //    case StopReplication()
   //    case SendData()
@@ -19,13 +24,42 @@ object ReplicationActor {
   def apply(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] =
     Behaviors.setup { context =>
       context.log.info("ReplicationActor started")
-      val config = createReplicationConfig(cmdArgConfig)
-      Behaviors.receiveMessage { case Command.Info(replyTo) =>
-        replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString) // Placeholder for actual info response
-        Behaviors.same
+      val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
+      if (config.isSlave) {
+        context.self ! Command.SendPingToMaster()
       }
+      Behaviors.receive {
 
+        case (ctx, msg: Command.Info)             => handleInfo(config, msg)
+        case (ctx, msg: Command.SendPingToMaster) => handleSendPingToMaster(config, msg)
+      }
     }
+  private def handleSendPingToMaster(
+      config: ReplicationConfig,
+      msg: Command.SendPingToMaster
+  ): Behavior[ReplicationActorBehaviorType] = {
+    val pingCommand = ByteString("*1\\r\\n$4\\r\\nPING\\r\\n")
+    val host = config.masterHost.getOrElse(new RuntimeException("Master host is not defined"))
+    val port = config.masterPort.getOrElse(6379) // Default Redis port
+
+    implicit val system = context.system
+
+    val source: Source[ByteString, _] = Source.single(pingCommand)
+    val connectionFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] = Tcp().outgoingConnection(host, port)
+    val pingStream: Source[ByteString, Future[Tcp.OutgoingConnection]] = source.viaMat(connectionFlow)((_, connectionF) => connectionF)
+    val connectionFuture = pingStream.runWith(Sink.ignore)
+
+    Behaviors.same
+
+  }
+
+  def handleInfo(
+      config: ReplicationConfig,
+      msg: Command.Info
+  ): ClientActor.ExpectingAnswers = {
+    msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(replicationInfo.toBulkString)
+    Behaviors.same
+  }
 
   private def createReplicationConfig(
       config: CmdArgConfig
@@ -39,7 +73,9 @@ object ReplicationActor {
       replicationBacklogActive = 0,
       replicationBacklogSize = 0,
       replicationBacklogFirstByte = None,
-      replicationBacklogHistlen = None
+      replicationBacklogHistlen = None,
+      masterHost = config.replicaof.map(_.split(" ").head),
+      masterPort = config.replicaof.flatMap(_.split(" ").lastOption).map(_.toInt)
     )
   }
 
@@ -52,8 +88,14 @@ object ReplicationActor {
       replicationBacklogActive: Int = 0, // Active replication backlog size
       replicationBacklogSize: Int = 0, // Total replication backlog size
       replicationBacklogFirstByte: Option[Long] = None, // Optional first byte of the replication backlog
-      replicationBacklogHistlen: Option[Long] = None // Optional history length of the replication backlog
+      replicationBacklogHistlen: Option[Long] = None, // Optional history length of the replication backlog
+      masterHost: Option[String] = None, // Optional master host for slave
+      masterPort: Option[Int] = None // Optional master port for slave
   ) {
+
+    def isMaster: Boolean = role == "master"
+    def isSlave: Boolean = role == "slave"
+
     def createReplicationInfo: ReplicationInfo = ReplicationInfo(
       role = role,
       connected_slaves = slaves.size,
