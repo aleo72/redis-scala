@@ -1,21 +1,21 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
-import obakalov.redis.actors.ReplicationActor.Command
+import obakalov.redis.actors.client.ProtocolGenerator
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
 import org.apache.pekko.stream.scaladsl.{Flow, Sink, Source, Tcp}
 import org.apache.pekko.util.ByteString
 
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContextExecutor, Future}
 import scala.util.Random
 
 object ReplicationActor {
 
   enum Command:
     case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
-    case SendPingToMaster()
+    case InitiateHandshake
   //    case StartReplication(masterHost: String, masterPort: Int)
   //    case StopReplication()
   //    case SendData()
@@ -27,37 +27,13 @@ object ReplicationActor {
       context.log.info("ReplicationActor started")
       val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
       if (config.isSlave) {
-        context.self ! Command.SendPingToMaster()
+        context.self ! Command.InitiateHandshake
       }
       Behaviors.receive {
-
-        case (ctx, msg: Command.Info)             => handleInfo(config, msg)
-        case (ctx, msg: Command.SendPingToMaster) => handleSendPingToMaster(ctx, config, msg)
+        case (ctx, msg: Command.Info)         => handleInfo(config, msg)
+        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(ctx, config)
       }
     }
-
-
-  private def handleSendPingToMaster(
-      context: ActorContext[ReplicationActorBehaviorType],
-      config: ReplicationConfig,
-      msg: Command.SendPingToMaster
-  ): Behavior[ReplicationActorBehaviorType] = {
-    val pingCommand = ByteString("*1\r\n$4\r\nPING\r\n")
-    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
-    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
-
-    implicit val system: ActorSystem[Nothing] = context.system
-
-    val source: Source[ByteString, NotUsed] = Source.single(pingCommand)
-    val connectionFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] =
-      Tcp.get(context.system).outgoingConnection(host, port)
-
-    val pingStream: Source[ByteString, Future[Tcp.OutgoingConnection]] = source.viaMat(connectionFlow)((_, connectionF) => connectionF)
-    val connectionFuture = pingStream.runWith(Sink.ignore)
-
-    Behaviors.same
-
-  }
 
   def handleInfo(
       config: ReplicationConfig,
@@ -65,6 +41,54 @@ object ReplicationActor {
   ): Behavior[ReplicationActorBehaviorType] = {
     msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
     Behaviors.same
+  }
+
+  private def handleInitiateHandshake(
+      context: ActorContext[ReplicationActorBehaviorType],
+      config: ReplicationConfig
+  ): Behavior[ReplicationActorBehaviorType] = {
+
+    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
+    val portString = port.toString
+
+    val pingCommand = ByteString(ProtocolGenerator.generateBulkString("PONG"))
+    val replconfListeningPortCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", port.toString))
+    val replconfCapaPsync2Command = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2"))
+
+    val pongResponse = ByteString(ProtocolGenerator.simpleString("PONG"))
+    val okResponse = ByteString(ProtocolGenerator.simpleString("OK"))
+
+    implicit val system: org.apache.pekko.actor.ActorSystem = context.system.classicSystem
+    implicit val executionContext: ExecutionContextExecutor = system.dispatcher
+
+    val handshakeFuture: Future[Unit] = for {
+      pong <- sendCommandToMaster(host, port, pingCommand)
+      _ = if (pong != pongResponse) throw new RuntimeException(s"Unexpected PONG response from master: ${pong.utf8String}")
+      ok1 <- sendCommandToMaster(host, port, replconfListeningPortCommand)
+      _ = if (ok1 != okResponse) throw new RuntimeException(s"Unexpected REPLCONF listening-port response from master: ${ok1.utf8String}")
+      ok2 <- sendCommandToMaster(host, port, replconfCapaPsync2Command)
+      _ = if (ok2 != okResponse) throw new RuntimeException(s"Unexpected REPLCONF CAPA PSYNC2 response from master: ${ok2.utf8String}")
+    } yield ()
+    
+    handshakeFuture.onComplete {
+      case scala.util.Success(_) =>
+        context.log.info("Handshake with master completed successfully")
+        // Here you can send a message to the dbActor to start replication
+//        dbActor ! DatabaseActor.Command.StartReplication(config)
+        Behaviors.same
+      case scala.util.Failure(exception) =>
+        context.log.error(s"Failed to complete handshake with master: ${exception.getMessage}")
+        Behaviors.stopped
+    }
+
+  }
+
+  private def sendCommandToMaster(host: String, port: Int, command: ByteString)(implicit system: org.apache.pekko.actor.ActorSystem): Future[ByteString] = {
+    Source
+      .single(command)
+      .via(Tcp.get(system).outgoingConnection(host, port))
+      .runWith(Sink.head)
   }
 
   private def createReplicationConfig(
@@ -81,7 +105,8 @@ object ReplicationActor {
       replicationBacklogFirstByte = None,
       replicationBacklogHistlen = None,
       masterHost = config.replicaof.map(_.split(" ").head),
-      masterPort = config.replicaof.flatMap(_.split(" ").lastOption).map(_.toInt)
+      masterPort = config.replicaof.flatMap(_.split(" ").lastOption).map(_.toInt),
+      selfPort = Option(config.port) // Use the configured port for the slave
     )
   }
 
@@ -96,7 +121,8 @@ object ReplicationActor {
       replicationBacklogFirstByte: Option[Long] = None, // Optional first byte of the replication backlog
       replicationBacklogHistlen: Option[Long] = None, // Optional history length of the replication backlog
       masterHost: Option[String] = None, // Optional master host for slave
-      masterPort: Option[Int] = None // Optional master port for slave
+      masterPort: Option[Int] = None, // Optional master port for slave
+      selfPort: Option[Int] = None // Optional self port for slave (if applicable)
   ) {
 
     def isMaster: Boolean = role == "master"
