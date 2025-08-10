@@ -4,6 +4,8 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/codecrafters-redis-scala/codecrafter-redis.iml" filepath="$PROJECT_DIR$/.idea/modules/codecrafters-redis-scala/codecrafter-redis.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/modules/codecrafters-redis-scala/codecrafter-redis.codecrafter-redis-build.iml" filepath="$PROJECT_DIR$/.idea/modules/codecrafters-redis-scala/codecrafter-redis.codecrafter-redis-build.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/redis-scala/codecrafter-redis.main.iml" filepath="$PROJECT_DIR$/.idea/modules/redis-scala/codecrafter-redis.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/redis-scala/codecrafter-redis.test.iml" filepath="$PROJECT_DIR$/.idea/modules/redis-scala/codecrafter-redis.test.iml" />
     </modules>
   </component>
 </project>

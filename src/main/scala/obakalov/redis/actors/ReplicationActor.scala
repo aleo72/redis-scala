@@ -2,9 +2,10 @@ package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.ReplicationActor.Command
-import org.apache.pekko.actor.typed.scaladsl.Behaviors
-import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import org.apache.pekko.stream.scaladsl.{Flow, Source, Tcp, Sink}
+import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
+import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
+import org.apache.pekko.stream.scaladsl.{Flow, Sink, Source, Tcp}
 import org.apache.pekko.util.ByteString
 
 import scala.concurrent.Future
@@ -31,21 +32,26 @@ object ReplicationActor {
       Behaviors.receive {
 
         case (ctx, msg: Command.Info)             => handleInfo(config, msg)
-        case (ctx, msg: Command.SendPingToMaster) => handleSendPingToMaster(config, msg)
+        case (ctx, msg: Command.SendPingToMaster) => handleSendPingToMaster(ctx, config, msg)
       }
     }
+
+
   private def handleSendPingToMaster(
+      context: ActorContext[ReplicationActorBehaviorType],
       config: ReplicationConfig,
       msg: Command.SendPingToMaster
   ): Behavior[ReplicationActorBehaviorType] = {
-    val pingCommand = ByteString("*1\\r\\n$4\\r\\nPING\\r\\n")
-    val host = config.masterHost.getOrElse(new RuntimeException("Master host is not defined"))
-    val port = config.masterPort.getOrElse(6379) // Default Redis port
+    val pingCommand = ByteString("*1\r\n$4\r\nPING\r\n")
+    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
 
-    implicit val system = context.system
+    implicit val system: ActorSystem[Nothing] = context.system
 
-    val source: Source[ByteString, _] = Source.single(pingCommand)
-    val connectionFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] = Tcp().outgoingConnection(host, port)
+    val source: Source[ByteString, NotUsed] = Source.single(pingCommand)
+    val connectionFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] =
+      Tcp.get(context.system).outgoingConnection(host, port)
+
     val pingStream: Source[ByteString, Future[Tcp.OutgoingConnection]] = source.viaMat(connectionFlow)((_, connectionF) => connectionF)
     val connectionFuture = pingStream.runWith(Sink.ignore)
 
@@ -56,8 +62,8 @@ object ReplicationActor {
   def handleInfo(
       config: ReplicationConfig,
       msg: Command.Info
-  ): ClientActor.ExpectingAnswers = {
-    msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(replicationInfo.toBulkString)
+  ): Behavior[ReplicationActorBehaviorType] = {
+    msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
     Behaviors.same
   }
 
