@@ -1,11 +1,12 @@
 package obakalov.redis.actors
 
 import obakalov.redis.CmdArgConfig
+import obakalov.redis.actors.ReplicationActor.Command.WrappedConnectionResponse
 import obakalov.redis.actors.client.ProtocolGenerator
-import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
-import org.apache.pekko.actor.typed.{ActorRef, ActorSystem, Behavior}
-import org.apache.pekko.stream.scaladsl.{Flow, Sink, Source, Tcp}
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.stream.scaladsl.{Sink, Source, Tcp}
 import org.apache.pekko.util.ByteString
 
 import scala.concurrent.{ExecutionContextExecutor, Future}
@@ -13,9 +14,13 @@ import scala.util.Random
 
 object ReplicationActor {
 
+  type ContextType = ActorContext[ReplicationActorBehaviorType]
+
   enum Command:
     case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
     case InitiateHandshake
+
+    case WrappedConnectionResponse(response: PersistentConnectionActor.Response)
   //    case StartReplication(masterHost: String, masterPort: Int)
   //    case StopReplication()
   //    case SendData()
@@ -29,66 +34,152 @@ object ReplicationActor {
       if (config.isSlave) {
         context.self ! Command.InitiateHandshake
       }
+
+      val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
+      val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+      val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
+
+      val connectionActor: ActorRef[PersistentConnectionActor.Command] =
+        context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
+
+
       Behaviors.receive {
-        case (ctx, msg: Command.Info)         => handleInfo(config, msg)
-        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(ctx, config)
+        case (ctx, msg: Command.Info)         => handleInfo(config, msg, connectionActor)
+        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(ctx, config, connectionActor, responseAdapter)
       }
     }
 
   def handleInfo(
       config: ReplicationConfig,
-      msg: Command.Info
+      msg: Command.Info,
+      connectionActor: ActorRef[PersistentConnectionActor.Command]
   ): Behavior[ReplicationActorBehaviorType] = {
     msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
     Behaviors.same
   }
 
-  private def handleInitiateHandshake(
-      context: ActorContext[ReplicationActorBehaviorType],
-      config: ReplicationConfig
-  ): Behavior[ReplicationActorBehaviorType] = {
-
-    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
-    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
-    val portString = port.toString
-
-    val pingCommand = ByteString(ProtocolGenerator.generateBulkString("PONG"))
-    val replconfListeningPortCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", port.toString))
-    val replconfCapaPsync2Command = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2"))
-
-    val pongResponse = ByteString(ProtocolGenerator.simpleString("PONG"))
-    val okResponse = ByteString(ProtocolGenerator.simpleString("OK"))
-
-    implicit val system: org.apache.pekko.actor.ActorSystem = context.system.classicSystem
-    implicit val executionContext: ExecutionContextExecutor = system.dispatcher
-
-    val handshakeFuture: Future[Unit] = for {
-      pong <- sendCommandToMaster(host, port, pingCommand)
-      _ = if (pong != pongResponse) throw new RuntimeException(s"Unexpected PONG response from master: ${pong.utf8String}")
-      ok1 <- sendCommandToMaster(host, port, replconfListeningPortCommand)
-      _ = if (ok1 != okResponse) throw new RuntimeException(s"Unexpected REPLCONF listening-port response from master: ${ok1.utf8String}")
-      ok2 <- sendCommandToMaster(host, port, replconfCapaPsync2Command)
-      _ = if (ok2 != okResponse) throw new RuntimeException(s"Unexpected REPLCONF CAPA PSYNC2 response from master: ${ok2.utf8String}")
-    } yield ()
-    
-    handshakeFuture.onComplete {
-      case scala.util.Success(_) =>
-        context.log.info("Handshake with master completed successfully")
-        // Here you can send a message to the dbActor to start replication
-//        dbActor ! DatabaseActor.Command.StartReplication(config)
-        Behaviors.same
-      case scala.util.Failure(exception) =>
-        context.log.error(s"Failed to complete handshake with master: ${exception.getMessage}")
-        Behaviors.stopped
+  def replicationActive(
+      config: ReplicationConfig,
+      connectionActor: ActorRef[PersistentConnectionActor.Command],
+      responseAdapter: ActorRef[PersistentConnectionActor.Response]
+  ): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
+    Behaviors.receiveMessage { m =>
+      context.log.info(s"Replication active, received message: $m")
+      Behaviors.same
     }
-
   }
 
-  private def sendCommandToMaster(host: String, port: Int, command: ByteString)(implicit system: org.apache.pekko.actor.ActorSystem): Future[ByteString] = {
+  private def handleInitiateHandshake(
+      context: ContextType,
+      config: ReplicationConfig,
+      connectionActor: ActorRef[PersistentConnectionActor.Command],
+      responseAdapter: ActorRef[PersistentConnectionActor.Response]
+  ): Behavior[ReplicationActorBehaviorType] = {
+    connectionActor ! PersistentConnectionActor.Send(ByteString(ProtocolGenerator.generateBulkString("PING")), responseAdapter)
+    /*    connectionActor ! PersistentConnectionActor.Send(
+      ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", portString)),
+      responseAdapter
+    )
+    connectionActor ! PersistentConnectionActor.Send(ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2")), responseAdapter)
+     */
+
+    awaitingHandshakePong(config, connectionActor, responseAdapter)
+  }
+
+  def awaitingHandshakePong(
+      config: ReplicationConfig,
+      connectionActor: ActorRef[PersistentConnectionActor.Command],
+      responseAdapter: ActorRef[PersistentConnectionActor.Response]
+  ): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      Behaviors.receiveMessage {
+        case Command.WrappedConnectionResponse(response) =>
+          response match {
+            case PersistentConnectionActor.Response.ConnectionFailure(reason) =>
+              context.log.error(s"Connection failure during handshake: $reason")
+              Behaviors.stopped
+            case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+PONG") =>
+              val portString = config.masterPort.getOrElse(6379).toString
+              context.log.info(s"Received PONG from master, sending REPLCONF listening-port $portString command")
+              val portMessageCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", portString))
+              connectionActor ! PersistentConnectionActor.Send(portMessageCommand, responseAdapter)
+              awaitingReplconfListeningPort(config, connectionActor, responseAdapter)
+            case PersistentConnectionActor.Response.ServerResponse(data) =>
+              context.log.error(s"Unexpected response during handshake: ${data.utf8String.trim}, expecting +PONG")
+              Behaviors.stopped
+          }
+        case m =>
+          context.log.warn(s"Unexpected message during handshake: $m")
+          Behaviors.unhandled
+      }
+    }
+
+  def awaitingReplconfListeningPort(
+      config: ReplicationConfig,
+      connectionActor: ActorRef[PersistentConnectionActor.Command],
+      responseAdapter: ActorRef[PersistentConnectionActor.Response]
+  ): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      Behaviors.receiveMessage {
+        case Command.WrappedConnectionResponse(response) =>
+          response match {
+            case PersistentConnectionActor.Response.ConnectionFailure(reason) =>
+              context.log.error(s"Connection failure during REPLCONF listening-port: $reason")
+              Behaviors.stopped
+            case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+OK") =>
+              context.log.info(s"Received +OK from master for REPLCONF listening-port, sending REPLCONF CAPA PSYNC2 command")
+              val capaMessageCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2"))
+              connectionActor ! PersistentConnectionActor.Send(capaMessageCommand, responseAdapter)
+              awaitingReplconfCapa(config, connectionActor, responseAdapter)
+            case PersistentConnectionActor.Response.ServerResponse(data) =>
+              context.log.error(s"Unexpected response during REPLCONF listening-port: ${data.utf8String.trim}, expecting +OK")
+              Behaviors.stopped
+          }
+        case m =>
+          context.log.warn(s"Unexpected message during REPLCONF listening-port: $m")
+          Behaviors.unhandled
+      }
+    }
+  def awaitingReplconfCapa(
+      config: ReplicationConfig,
+      connectionActor: ActorRef[PersistentConnectionActor.Command],
+      responseAdapter: ActorRef[PersistentConnectionActor.Response]
+  ): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      Behaviors.receiveMessage {
+        case Command.WrappedConnectionResponse(response) =>
+          response match {
+            case PersistentConnectionActor.Response.ConnectionFailure(reason) =>
+              context.log.error(s"Connection failure during REPLCONF CAPA: $reason")
+              Behaviors.stopped
+            case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+OK") =>
+              context.log.info(s"Received +OK from master for REPLCONF CAPA, sending PSYNC command")
+              replicationActive(config, connectionActor, responseAdapter)
+            case PersistentConnectionActor.Response.ServerResponse(data) =>
+              context.log.error(s"Unexpected response during REPLCONF CAPA: ${data.utf8String.trim}, expecting +OK")
+              Behaviors.stopped
+          }
+        case m =>
+          context.log.warn(s"Unexpected message during REPLCONF CAPA: $m")
+          Behaviors.unhandled
+      }
+    }
+
+  private def sendCommandToMaster(host: String, port: Int, command: ByteString)(implicit context: ContextType): Future[ByteString] = {
+    implicit val system: ActorSystem = context.system.classicSystem
+    implicit val executionContext: ExecutionContextExecutor = context.system.executionContext
+    println(s"Connecting to master at $host:$port: sending command ${command.utf8String.trim}")
     Source
       .single(command)
-      .via(Tcp.get(system).outgoingConnection(host, port))
-      .runWith(Sink.head)
+      .via(Tcp().outgoingConnection(host, port))
+      .runWith(Sink.headOption)
+      .map { response =>
+        println(s"Received response from master: ${response.map(_.utf8String.trim)}")
+        response.getOrElse(
+          throw new RuntimeException(s"Failed to receive response from master at $host:$port")
+        )
+      }
+
   }
 
   private def createReplicationConfig(
