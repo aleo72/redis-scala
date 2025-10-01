@@ -75,14 +75,10 @@ object ReplicationActor {
       connectionActor: ActorRef[PersistentConnectionActor.Command],
       responseAdapter: ActorRef[PersistentConnectionActor.Response]
   ): Behavior[ReplicationActorBehaviorType] = {
+    context.log.info(s"Initiating handshake with master at ${config.masterHost.get}:${config.masterPort.get}")
+    context.log.info(s"Sending PING command to master")
     connectionActor ! PersistentConnectionActor.Send(ByteString(ProtocolGenerator.generateBulkString("PING")), responseAdapter)
-    /*    connectionActor ! PersistentConnectionActor.Send(
-      ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", portString)),
-      responseAdapter
-    )
-    connectionActor ! PersistentConnectionActor.Send(ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2")), responseAdapter)
-     */
-
+    context.log.info(s"Sent PING command to master, awaiting PONG response")
     awaitingHandshakePong(config, connectionActor, responseAdapter)
   }
 

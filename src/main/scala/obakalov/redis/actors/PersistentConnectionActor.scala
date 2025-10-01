@@ -3,7 +3,7 @@ package obakalov.redis.actors
 import obakalov.redis.actors.PersistentConnectionActor.InternalCommand.{FromServer, StreamFailure}
 import org.apache.pekko.Done
 import org.apache.pekko.actor.typed.*
-import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.actor.typed.scaladsl.{Behaviors, StashBuffer}
 import org.apache.pekko.stream.BoundedSourceQueue
 import org.apache.pekko.stream.scaladsl.{Flow, Keep, Sink, Source, Tcp}
 import org.apache.pekko.util.ByteString
@@ -29,41 +29,47 @@ object PersistentConnectionActor {
   }
 
   def apply(host: String, port: Int): Behavior[Command] = {
-    Behaviors.setup { context =>
-      implicit val system: ActorSystem[Nothing] = context.system
-      val source: Source[ByteString, BoundedSourceQueue[ByteString]] = Source.queue[ByteString](bufferSize = 1000)
+    Behaviors.withStash(1000) { buffer =>
+      Behaviors.setup { context =>
+        implicit val system: ActorSystem[Nothing] = context.system
+        val source: Source[ByteString, BoundedSourceQueue[ByteString]] = Source.queue[ByteString](bufferSize = 1000)
 
-      val sink: Sink[ByteString, Future[Done]] = Sink.foreach(bytes => context.self.tell(FromServer(bytes)))
+        val sink: Sink[ByteString, Future[Done]] = Sink.foreach(bytes => context.self.tell(FromServer(bytes)))
 
-      val tcpFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] = Tcp(system).outgoingConnection(host, port)
+        val tcpFlow: Flow[ByteString, ByteString, Future[Tcp.OutgoingConnection]] = Tcp(system).outgoingConnection(host, port)
 
-      val (queue, streamDoneFuture) = source.via(tcpFlow).toMat(sink)(Keep.both).run()
+        val (queue, streamDoneFuture) = source.via(tcpFlow).toMat(sink)(Keep.both).run()
 
-      context.pipeToSelf(Future.successful(queue)) {
-        case Success(value)     => InternalCommand.StreamInitialized(value)
-        case Failure(exception) => InternalCommand.StreamFailure(exception)
+        context.pipeToSelf(Future.successful(queue)) {
+          case Success(value)     => InternalCommand.StreamInitialized(value)
+          case Failure(exception) => InternalCommand.StreamFailure(exception)
+        }
+        context.pipeToSelf(streamDoneFuture) {
+          case Success(_)         => InternalCommand.StreamCompleted
+          case Failure(exception) => InternalCommand.StreamFailure(exception)
+        }
+
+        initializing(buffer)
       }
-      context.pipeToSelf(streamDoneFuture) {
-        case Success(_)         => InternalCommand.StreamCompleted
-        case Failure(exception) => InternalCommand.StreamFailure(exception)
-      }
-
-      initializing()
     }
   }
 
-  private def initializing(): Behavior[Command] = Behaviors.receiveMessage {
-    case InternalCommand.StreamInitialized(queue) =>
-      Behaviors.setup { context =>
-        context.log.info("Stream initialized, switching to active behavior")
-        active(queue)
-      }
-    case InternalCommand.StreamFailure(ex) =>
-      Behaviors.setup { context =>
+  private def initializing(buffer: StashBuffer[Command]): Behavior[Command] = Behaviors.receive { (context, message) =>
+    message match {
+      case InternalCommand.StreamInitialized(queue) =>
+        context.log.info("Stream initialized, unstashing messages and switching to active behavior")
+        buffer.unstashAll(active(queue))
+      case InternalCommand.StreamFailure(ex) =>
         context.log.error("Stream failed during initialization", ex)
         Behaviors.stopped
-      }
-    case _ => Behaviors.unhandled
+      case send: Send =>
+        context.log.debug(s"Stashing message $send while initializing")
+        buffer.stash(send)
+        Behaviors.same
+      case other =>
+        context.log.warn(s"Received message $other while initializing, ignoring")
+        Behaviors.same
+    }
   }
 
   private def active(queue: BoundedSourceQueue[ByteString]): Behavior[Command] = Behaviors.receive {
