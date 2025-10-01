@@ -32,22 +32,46 @@ object ReplicationActor {
       context.log.info("ReplicationActor started")
       val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
       if (config.isSlave) {
-        context.self ! Command.InitiateHandshake
-      }
-
-      val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
-      val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
-      val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
-
-      val connectionActor: ActorRef[PersistentConnectionActor.Command] =
-        context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
-
-
-      Behaviors.receive {
-        case (ctx, msg: Command.Info)         => handleInfo(config, msg, connectionActor)
-        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(config, connectionActor, responseAdapter)
+        slaveLoginc(cmdArgConfig, dbActor)
+      } else {
+        masterLogic(cmdArgConfig, dbActor)
       }
     }
+
+  def masterLogic(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
+    context.log.info("Starting master replication logic")
+    // Master-specific replication logic would go here
+    Behaviors.receiveMessage {
+      case msg: Command.Info =>
+        context.log.info("Received INFO command")
+        msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(Seq("role:master").map(_.getBytes("UTF-8")))
+        Behaviors.same
+      case msg =>
+        context.log.warn(s"Master received unexpected message: $msg")
+        Behaviors.unhandled
+    }
+  }
+
+  def slaveLoginc(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
+    context.log.info("Starting slave login process")
+    val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
+    context.self ! Command.InitiateHandshake
+    val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
+    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
+
+    val connectionActor: ActorRef[PersistentConnectionActor.Command] =
+      context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
+
+    Behaviors.receiveMessage {
+      case msg: Command.Info => handleInfo(config, msg, connectionActor)
+      case Command.InitiateHandshake =>
+        handleInitiateHandshake(config, connectionActor, responseAdapter)
+      case msg =>
+        context.log.warn(s"Slave received unexpected message: $msg")
+        Behaviors.unhandled
+    }
+  }
 
   def handleInfo(
       config: ReplicationConfig,
