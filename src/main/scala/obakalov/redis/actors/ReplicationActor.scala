@@ -45,7 +45,7 @@ object ReplicationActor {
 
       Behaviors.receive {
         case (ctx, msg: Command.Info)         => handleInfo(config, msg, connectionActor)
-        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(ctx, config, connectionActor, responseAdapter)
+        case (ctx, Command.InitiateHandshake) => handleInitiateHandshake(config, connectionActor, responseAdapter)
       }
     }
 
@@ -70,11 +70,10 @@ object ReplicationActor {
   }
 
   private def handleInitiateHandshake(
-      context: ContextType,
       config: ReplicationConfig,
       connectionActor: ActorRef[PersistentConnectionActor.Command],
       responseAdapter: ActorRef[PersistentConnectionActor.Response]
-  ): Behavior[ReplicationActorBehaviorType] = {
+  ): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
     context.log.info(s"Initiating handshake with master at ${config.masterHost.get}:${config.masterPort.get}")
     context.log.info(s"Sending PING command to master")
     connectionActor ! PersistentConnectionActor.Send(ByteString(ProtocolGenerator.generateBulkString("PING")), responseAdapter)
@@ -95,7 +94,7 @@ object ReplicationActor {
               context.log.error(s"Connection failure during handshake: $reason")
               Behaviors.stopped
             case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+PONG") =>
-              val portString = config.masterPort.getOrElse(6379).toString
+              val portString = config.currentPort.toString
               context.log.info(s"Received PONG from master, sending REPLCONF listening-port $portString command")
               val portMessageCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", portString))
               connectionActor ! PersistentConnectionActor.Send(portMessageCommand, responseAdapter)
@@ -182,6 +181,7 @@ object ReplicationActor {
       config: CmdArgConfig
   ): ReplicationConfig = {
     ReplicationConfig(
+      currentPort = config.port,
       role = if (config.replicaof.isEmpty) "master" else "slave",
       slaves = Seq.empty, // Initially no slaves
       masterReplicationId = Random.alphanumeric.take(40).mkString, // Generate a random replication ID
@@ -198,6 +198,7 @@ object ReplicationActor {
   }
 
   case class ReplicationConfig(
+      currentPort: Int = 6379,
       role: String, // "master" or "slave"
       slaves: Seq[String], // List of slave addresses
       masterReplicationId: String, // Master replication ID
