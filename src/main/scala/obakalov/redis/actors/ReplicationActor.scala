@@ -15,6 +15,7 @@ object ReplicationActor {
 
   enum Command:
     case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
+    case ReplConf(replyTo: ActorRef[ClientActor.ExpectingAnswers], params: Map[String, String])
     case InitiateHandshake
     case WrappedConnectionResponse(response: PersistentConnectionActor.Response)
 
@@ -39,30 +40,32 @@ object ReplicationActor {
       }
     }
 
-  private def masterLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
-    context.log.info("Starting master replication logic")
-    // Master-specific replication logic would go here
-    Behaviors.receiveMessage {
-      case msg: Command.Info =>
-        context.log.info("Received INFO command")
-        handleInfo(config, msg)
-      case msg =>
-        context.log.warn(s"Master received unexpected message: $msg")
-        Behaviors.unhandled
-    }
+  private def masterLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup {
+    context =>
+      context.log.info("Starting master replication logic")
+      // Master-specific replication logic would go here
+      Behaviors.receiveMessage {
+        case msg: Command.Info     => handleInfo(config, msg)
+        case cmd: Command.ReplConf => handleReplConf(config, cmd, dbActor)
+        case msg                   =>
+          context.log.warn(s"Master received unexpected message: $msg")
+          Behaviors.unhandled
+      }
   }
 
-  private def slaveLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
-    context.log.info("Starting slave login process")
+  private def slaveLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup {
+    context =>
+      context.log.info("Starting slave login process")
 
-    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
-    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
-    context.log.info(s"Connecting to master at $host:$port")
-    val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
-    val connectionActor: ActorRef[PersistentConnectionActor.Command] = context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
+      val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+      val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
+      context.log.info(s"Connecting to master at $host:$port")
+      val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
+      val connectionActor: ActorRef[PersistentConnectionActor.Command] =
+        context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
 
-    context.self ! Command.InitiateHandshake
-    handleInitiateHandshake(config, connectionActor, responseAdapter, State.HandshakingInit)
+      context.self ! Command.InitiateHandshake
+      handleInitiateHandshake(config, connectionActor, responseAdapter, State.HandshakingInit)
   }
 
   def handleInfo(
@@ -73,7 +76,31 @@ object ReplicationActor {
       context.log.info("Received INFO command")
       msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
       Behaviors.same[ReplicationActorBehaviorType]
-  }
+    }
+    
+  def handleReplConf(
+      config: ReplicationConfig,
+      msg: Command.ReplConf,
+      dbActor: ActorRef[DatabaseActor.Command]
+  ): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      context.log.info(s"Received REPLCONF command with params: ${msg.params}")
+
+      val newConfig = msg.params.foldLeft(config) { case (config, (conf, param)) =>
+        conf.toLowerCase match {
+          case "listening-port" =>
+            config.copy(slaves = (config.slaves :+ s"${msg.params.getOrElse("ip", "unknown")}:$param").distinct)
+          case "capa" if param.toUpperCase == "PSYNC2" =>
+            config // Acknowledge PSYNC2 capability
+          case _ =>
+            config // Ignore unknown parameters for now
+        }
+      }
+
+      msg.replyTo ! ClientActor.ExpectingAnswers.Ok
+
+      masterLogic(newConfig, dbActor)
+    }
 
   def replicationActive(
       config: ReplicationConfig,
@@ -85,8 +112,8 @@ object ReplicationActor {
         context.log.info("Received INFO command")
         handleInfo(config, msg)
       case m =>
-      context.log.info(s"Replication active, received message: $m")
-      Behaviors.same
+        context.log.info(s"Replication active, received message: $m")
+        Behaviors.same
     }
   }
 
@@ -97,7 +124,7 @@ object ReplicationActor {
       state: State
   ): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
     Behaviors.receiveMessage {
-      case msg: Command.Info => handleInfo(config, msg)
+      case msg: Command.Info         => handleInfo(config, msg)
       case Command.InitiateHandshake =>
         context.log.info(s"Initiating handshake with master at ${config.masterHost.get}:${config.masterPort.get}")
         context.log.info(s"Sending PING command to master")
@@ -115,7 +142,8 @@ object ReplicationActor {
             val portMessageCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "listening-port", portString))
             connectionActor ! PersistentConnectionActor.Send(portMessageCommand, responseAdapter)
             handleInitiateHandshake(config, connectionActor, responseAdapter, State.HandshakingReplconfListeningPortAwaitOk)
-          case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+OK") && state == State.HandshakingReplconfListeningPortAwaitOk =>
+          case PersistentConnectionActor.Response.ServerResponse(data)
+              if data.utf8String.startsWith("+OK") && state == State.HandshakingReplconfListeningPortAwaitOk =>
             context.log.info(s"Received +OK from master for REPLCONF listening-port, sending REPLCONF CAPA PSYNC2 command")
             val capaMessageCommand = ByteString(ProtocolGenerator.generateBulkString("REPLCONF", "CAPA", "PSYNC2"))
             connectionActor ! PersistentConnectionActor.Send(capaMessageCommand, responseAdapter)
@@ -125,9 +153,10 @@ object ReplicationActor {
             val psyncCommand = ByteString(ProtocolGenerator.generateBulkString("PSYNC", "?", "-1"))
             connectionActor ! PersistentConnectionActor.Send(psyncCommand, responseAdapter)
             handleInitiateHandshake(config, connectionActor, responseAdapter, State.HandshakingPsyncAwaitResponse)
-          case PersistentConnectionActor.Response.ServerResponse(data) if data.utf8String.startsWith("+FULLRESYNC") && state == State.HandshakingPsyncAwaitResponse =>
-              context.log.info(s"Received FULLRESYNC from master, replication established")
-              replicationActive(config, connectionActor, responseAdapter)
+          case PersistentConnectionActor.Response.ServerResponse(data)
+              if data.utf8String.startsWith("+FULLRESYNC") && state == State.HandshakingPsyncAwaitResponse =>
+            context.log.info(s"Received FULLRESYNC from master, replication established")
+            replicationActive(config, connectionActor, responseAdapter)
           case PersistentConnectionActor.Response.ServerResponse(data) =>
             context.log.error(s"Unexpected response during handshake: ${data.utf8String.trim}")
             Behaviors.stopped
@@ -137,7 +166,6 @@ object ReplicationActor {
         Behaviors.unhandled
     }
   }
-
 
   private def createReplicationConfig(
       config: CmdArgConfig
