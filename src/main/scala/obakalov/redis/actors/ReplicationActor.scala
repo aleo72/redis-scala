@@ -3,13 +3,10 @@ package obakalov.redis.actors
 import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.ReplicationActor.Command.WrappedConnectionResponse
 import obakalov.redis.actors.client.ProtocolGenerator
-import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import org.apache.pekko.stream.scaladsl.{Sink, Source, Tcp}
 import org.apache.pekko.util.ByteString
 
-import scala.concurrent.{ExecutionContextExecutor, Future}
 import scala.util.Random
 
 object ReplicationActor {
@@ -32,40 +29,37 @@ object ReplicationActor {
       context.log.info("ReplicationActor started")
       val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
       if (config.isSlave) {
-        slaveLoginc(cmdArgConfig, dbActor)
+        slaveLogic(config, dbActor)
       } else {
-        masterLogic(cmdArgConfig, dbActor)
+        masterLogic(config, dbActor)
       }
     }
 
-  def masterLogic(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
+  private def masterLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
     context.log.info("Starting master replication logic")
     // Master-specific replication logic would go here
     Behaviors.receiveMessage {
       case msg: Command.Info =>
         context.log.info("Received INFO command")
-        msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(Seq("role:master").map(_.getBytes("UTF-8")))
-        Behaviors.same
+        handleInfo(config, msg)
       case msg =>
         context.log.warn(s"Master received unexpected message: $msg")
         Behaviors.unhandled
     }
   }
 
-  def slaveLoginc(cmdArgConfig: CmdArgConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
+  private def slaveLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
     context.log.info("Starting slave login process")
-    val config: ReplicationConfig = createReplicationConfig(cmdArgConfig)
     context.self ! Command.InitiateHandshake
-    val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
-    val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
-    val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
-
-    val connectionActor: ActorRef[PersistentConnectionActor.Command] =
-      context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
 
     Behaviors.receiveMessage {
-      case msg: Command.Info => handleInfo(config, msg, connectionActor)
+      case msg: Command.Info => handleInfo(config, msg)
       case Command.InitiateHandshake =>
+        val responseAdapter: ActorRef[PersistentConnectionActor.Response] = context.messageAdapter(Command.WrappedConnectionResponse.apply)
+        val host: String = config.masterHost.getOrElse(throw new RuntimeException("Master host is not defined"))
+        val port: Int = config.masterPort.getOrElse(6379) // Default Redis port
+        context.log.info(s"Connecting to master at $host:$port")
+        val connectionActor: ActorRef[PersistentConnectionActor.Command] = context.spawn(PersistentConnectionActor(host, port), s"PersistentConnectionActor-$host-$port")
         handleInitiateHandshake(config, connectionActor, responseAdapter)
       case msg =>
         context.log.warn(s"Slave received unexpected message: $msg")
@@ -75,8 +69,7 @@ object ReplicationActor {
 
   def handleInfo(
       config: ReplicationConfig,
-      msg: Command.Info,
-      connectionActor: ActorRef[PersistentConnectionActor.Command]
+      msg: Command.Info
   ): Behavior[ReplicationActorBehaviorType] = {
     msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
     Behaviors.same
@@ -87,7 +80,11 @@ object ReplicationActor {
       connectionActor: ActorRef[PersistentConnectionActor.Command],
       responseAdapter: ActorRef[PersistentConnectionActor.Response]
   ): Behavior[ReplicationActorBehaviorType] = Behaviors.setup { context =>
-    Behaviors.receiveMessage { m =>
+    Behaviors.receiveMessage {
+      case msg: Command.Info =>
+        context.log.info("Received INFO command")
+        handleInfo(config, msg)
+      case m =>
       context.log.info(s"Replication active, received message: $m")
       Behaviors.same
     }
@@ -127,6 +124,9 @@ object ReplicationActor {
               context.log.error(s"Unexpected response during handshake: ${data.utf8String.trim}, expecting +PONG")
               Behaviors.stopped
           }
+        case msg: Command.Info =>
+          context.log.info("Received INFO command")
+          handleInfo(config, msg)
         case m =>
           context.log.warn(s"Unexpected message during handshake: $m")
           Behaviors.unhandled
@@ -154,6 +154,9 @@ object ReplicationActor {
               context.log.error(s"Unexpected response during REPLCONF listening-port: ${data.utf8String.trim}, expecting +OK")
               Behaviors.stopped
           }
+        case msg: Command.Info =>
+          context.log.info("Received INFO command")
+          handleInfo(config, msg)
         case m =>
           context.log.warn(s"Unexpected message during REPLCONF listening-port: $m")
           Behaviors.unhandled
@@ -178,28 +181,16 @@ object ReplicationActor {
               context.log.error(s"Unexpected response during REPLCONF CAPA: ${data.utf8String.trim}, expecting +OK")
               Behaviors.stopped
           }
+        case msg: Command.Info =>
+          context.log.info("Received INFO command")
+          handleInfo(config, msg)
         case m =>
           context.log.warn(s"Unexpected message during REPLCONF CAPA: $m")
           Behaviors.unhandled
       }
     }
 
-  private def sendCommandToMaster(host: String, port: Int, command: ByteString)(implicit context: ContextType): Future[ByteString] = {
-    implicit val system: ActorSystem = context.system.classicSystem
-    implicit val executionContext: ExecutionContextExecutor = context.system.executionContext
-    println(s"Connecting to master at $host:$port: sending command ${command.utf8String.trim}")
-    Source
-      .single(command)
-      .via(Tcp().outgoingConnection(host, port))
-      .runWith(Sink.headOption)
-      .map { response =>
-        println(s"Received response from master: ${response.map(_.utf8String.trim)}")
-        response.getOrElse(
-          throw new RuntimeException(s"Failed to receive response from master at $host:$port")
-        )
-      }
 
-  }
 
   private def createReplicationConfig(
       config: CmdArgConfig
