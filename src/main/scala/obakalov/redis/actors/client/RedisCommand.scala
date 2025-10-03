@@ -23,3 +23,4 @@ enum RedisSimpleCommand(val logic: CommandDetectTrait & SimpleCommandHandler) ex
 enum RedisReplicationCommand(val logic: CommandDetectTrait & ReplicationCommandHandler) extends RedisCommand:
   case INFO extends RedisReplicationCommand(ReplicationInfoLogic)
   case REPLCONF extends RedisReplicationCommand(ReplConfLogic)
+  case PSYNC extends RedisReplicationCommand(PsyncLogic)

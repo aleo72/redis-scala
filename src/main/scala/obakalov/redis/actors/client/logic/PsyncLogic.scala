@@ -7,8 +7,8 @@ import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
 import org.slf4j.Logger
 
-object ReplConfLogic extends CommandDetectTrait with ReplicationCommandHandler {
-  override def commandName: String = "REPLCONF"
+object PsyncLogic extends CommandDetectTrait with ReplicationCommandHandler {
+  override def commandName: String = "PSYNC"
 
   override def handle(
       command: ProtocolMessage,
@@ -19,10 +19,13 @@ object ReplConfLogic extends CommandDetectTrait with ReplicationCommandHandler {
       log: Logger
   ): ExpectedResponseEnum = {
     log.info(s"Sending $commandName command $command to replication actor ($replicationActor) with replyTo: $replyTo")
-    // Send the REPLCONF command to the replication actor
+    // Send the PSYNC command to the replication actor
     val messages: Seq[String] = command.multiBulkMessage.get.drop(1).map(_.bulkMessageString)
-    val params: Map[String, String] = messages.grouped(2).collect { case Seq(key, value) => key -> value }.toMap
-    replicationActor ! ReplicationActor.Command.ReplConf(replyTo, params)
+    val (runId, offset) = messages match {
+      case Seq(rid, off) => (rid, off.toLongOption.getOrElse(-1L))
+      case _             => ("?", -1L)
+    }
+    replicationActor ! ReplicationActor.Command.Psync(replyTo, runId, offset)
     ExpectedResponseEnum.ExpectedResponse
   }
 }

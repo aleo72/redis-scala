@@ -16,6 +16,7 @@ object ReplicationActor {
   enum Command:
     case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
     case ReplConf(replyTo: ActorRef[ClientActor.ExpectingAnswers], params: Map[String, String])
+    case Psync(replyTo: ActorRef[ClientActor.ExpectingAnswers], runId: String, offset: Long)
     case InitiateHandshake
     case WrappedConnectionResponse(response: PersistentConnectionActor.Response)
 
@@ -47,6 +48,7 @@ object ReplicationActor {
       Behaviors.receiveMessage {
         case msg: Command.Info     => handleInfo(config, msg)
         case cmd: Command.ReplConf => handleReplConf(config, cmd, dbActor)
+        case psync: Command.Psync  => handlePsync(config, psync, dbActor)
         case msg                   =>
           context.log.warn(s"Master received unexpected message: $msg")
           Behaviors.unhandled
@@ -77,7 +79,7 @@ object ReplicationActor {
       msg.replyTo ! ClientActor.ExpectingAnswers.MultiBulkString(config.createReplicationInfo.toBulkString)
       Behaviors.same[ReplicationActorBehaviorType]
     }
-    
+
   def handleReplConf(
       config: ReplicationConfig,
       msg: Command.ReplConf,
@@ -100,6 +102,15 @@ object ReplicationActor {
       msg.replyTo ! ClientActor.ExpectingAnswers.Ok
 
       masterLogic(newConfig, dbActor)
+    }
+
+  def handlePsync(config: ReplicationConfig, msg: Command.Psync, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      context.log.info(s"Received PSYNC command with runId: ${msg.runId},offset: ${msg.offset}")
+      // For simplicity, always respond with FULLRESYNC
+      val newRunId = Random.alphanumeric.take(40).mkString
+      msg.replyTo ! ClientActor.ExpectingAnswers.BulkString(Option(ProtocolGenerator.simpleString(s"FULLRESYNC $newRunId 0").getBytes("UTF-8")))
+      masterLogic(config, dbActor)
     }
 
   def replicationActive(
