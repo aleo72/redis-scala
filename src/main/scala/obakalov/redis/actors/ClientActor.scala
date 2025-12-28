@@ -20,6 +20,7 @@ object ClientActor {
     case BulkString(value: Option[Array[Byte]])
     case MultiBulkString(value: Seq[Array[Byte]])
     case ArrayBulkString(values: Seq[Array[Byte]])
+    case DirectValue(value: Array[Byte])
     case Cleared
     case Ok
     case Error(message: String)
@@ -55,6 +56,10 @@ object ClientActor {
               ctx.log.error("Failed to parse message from client.")
               Behaviors.same
           }
+        case ClientActor.ExpectingAnswers.DirectValue(value) =>
+          ctx.log.info(s"Received DirectValue response from database actor: $value")
+          queue.offer(createBulkString(value))
+          idle(queue, dbActor, replicationActor, buffer)
 
         case Command.SendToClient(data) =>
           ctx.log.info(s"Sending data to client: ${data.utf8String.trim}")

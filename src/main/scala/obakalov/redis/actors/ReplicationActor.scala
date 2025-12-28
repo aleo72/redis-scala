@@ -109,7 +109,12 @@ object ReplicationActor {
       context.log.info(s"Received PSYNC command with runId: ${msg.runId},offset: ${msg.offset}")
       // For simplicity, always respond with FULLRESYNC
       val newRunId = Random.alphanumeric.take(40).mkString
-      msg.replyTo ! ClientActor.ExpectingAnswers.BulkString(Option(ProtocolGenerator.simpleString(s"FULLRESYNC $newRunId 0").getBytes("UTF-8")))
+      msg.replyTo ! ClientActor.ExpectingAnswers.BulkString(Option(s"FULLRESYNC $newRunId 0".getBytes("UTF-8")))
+
+      // empty database response
+      val rdbBytes = java.util.Base64.getDecoder.decode("UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==")
+      msg.replyTo ! ClientActor.ExpectingAnswers.DirectValue(rdbBytes)
+      
       masterLogic(config, dbActor)
     }
 
