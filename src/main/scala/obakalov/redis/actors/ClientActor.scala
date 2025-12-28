@@ -21,6 +21,7 @@ object ClientActor {
     case MultiBulkString(value: Seq[Array[Byte]])
     case ArrayBulkString(values: Seq[Array[Byte]])
     case DirectValue(value: Array[Byte])
+    case SimpleString(value: String)
     case Cleared
     case Ok
     case Error(message: String)
@@ -58,7 +59,7 @@ object ClientActor {
           }
         case ClientActor.ExpectingAnswers.DirectValue(value) =>
           ctx.log.info(s"Received DirectValue response from database actor: $value")
-          queue.offer(createBulkString(value))
+          queue.offer(ByteString("$") ++ ByteString(value.length.toString) ++ ByteString("\r\n") ++ ByteString(value))
           idle(queue, dbActor, replicationActor, buffer)
 
         case Command.SendToClient(data) =>
@@ -128,9 +129,13 @@ object ClientActor {
         case ClientActor.ExpectingAnswers.BulkString(value) =>
           ctx.log.info(s"Received Value response from database actor: $value")
           value match {
-            case Some(v) => queue.offer(ByteString('+') ++ ByteString(v) ++ ByteString("\r\n"))
+            case Some(v) => queue.offer(createBulkString(v))
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
+          buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
+        case ClientActor.ExpectingAnswers.SimpleString(value) =>
+          ctx.log.info(s"Received SimpleString response: $value")
+          queue.offer(ByteString("+") ++ ByteString(value) ++ ByteString("\r\n"))
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
         case ClientActor.ExpectingAnswers.MultiBulkString(values) =>
           ctx.log.info("Received MultiBulkString response from database actor.")
