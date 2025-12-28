@@ -109,11 +109,6 @@ object ClientActor {
 
   }
 
-  private def createBulkString(v: Array[Byte]): ByteString = {
-    if (v == null) ByteString("$-1\r\n")
-    else ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n")
-  }
-
   private def working(
       queue: SourceQueueWithComplete[ByteString],
       dbActor: ActorRef[DatabaseActor.Command],
@@ -129,7 +124,7 @@ object ClientActor {
         case ClientActor.ExpectingAnswers.BulkString(value) =>
           ctx.log.info(s"Received Value response from database actor: $value")
           value match {
-            case Some(v) => queue.offer(createBulkString(v))
+            case Some(v) => queue.offer(ProtocolGenerator.createBulkString(v))
             case None    => queue.offer(ByteString("$-1\r\n")) // nil response
           }
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
@@ -141,14 +136,14 @@ object ClientActor {
           ctx.log.info("Received MultiBulkString response from database actor.")
           values.foreach { v =>
             ctx.log.info(s"PRINT: ${new String(v, StandardCharsets.UTF_8)}")
-            queue.offer(createBulkString(v))
+            queue.offer(ProtocolGenerator.createBulkString(v))
           }
           buffer.unstashAll(idle(queue, dbActor, replicationActor, buffer))
         case ClientActor.ExpectingAnswers.ArrayBulkString(values) =>
           ctx.log.info("Received ValueBulkString response from database actor.")
           val bulkStringResponse: ByteString =
             values
-              .map(createBulkString)
+              .map(ProtocolGenerator.createBulkString)
               .foldLeft(
                 if (values.isEmpty) ByteString("*0\r\n")
 //                else if (values.length == 1) ByteString.empty

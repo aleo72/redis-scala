@@ -1,5 +1,7 @@
 package obakalov.redis.actors.client
 
+import org.apache.pekko.util.ByteString
+
 object ProtocolGenerator {
 
   def generateBulkString(data: String*): String = {
@@ -11,7 +13,12 @@ object ProtocolGenerator {
     }
     sb.toString()
   }
-  
+
+  def createBulkString(v: Array[Byte]): ByteString = {
+    if (v == null) ByteString("$-1\r\n")
+    else ByteString("$") ++ ByteString(v.length.toString) ++ ByteString("\r\n") ++ ByteString(v) ++ ByteString("\r\n")
+  }
+
   def simpleString(data: String): String = {
     s"+$data\r\n"
   }

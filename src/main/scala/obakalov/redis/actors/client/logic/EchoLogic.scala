@@ -1,6 +1,6 @@
 package obakalov.redis.actors.client.logic
 
-import obakalov.redis.actors.client.{CommandDetectTrait, SimpleCommandHandler, ExpectedResponseEnum, ProtocolMessage}
+import obakalov.redis.actors.client.{CommandDetectTrait, ExpectedResponseEnum, ProtocolGenerator, ProtocolMessage, SimpleCommandHandler}
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
@@ -17,11 +17,15 @@ object EchoLogic extends CommandDetectTrait with SimpleCommandHandler {
       queue: SourceQueueWithComplete[ByteString],
       log: org.slf4j.Logger
   ): ExpectedResponseEnum = {
-    // Extract the message to echo from the command
-    val message = command.multiBulkMessage.map(_.tail).map(_.map(_.bulkMessageString).mkString(" ")).getOrElse("")
-    // Write the response to the output stream
-    //    out.write(responseToBytes(s"+$message"))
-    queue.offer(ByteString(s"+$message\r\n"))
+    // Extract the message to echo from the command. Redis ECHO expects exactly one argument.
+    val messageBytes = command.multiBulkMessage match {
+      case Some(multi) if multi.length > 1 =>
+        multi(1).bulkMessage.getOrElse(Array.emptyByteArray)
+      case _ =>
+        Array.emptyByteArray
+    }
+
+    queue.offer(ProtocolGenerator.createBulkString(messageBytes))
     ExpectedResponseEnum.NoResponse
   }
 }

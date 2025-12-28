@@ -1,6 +1,6 @@
 package obakalov.redis.actors.client.logic
 
-import obakalov.redis.actors.client.{CommandDetectTrait, SimpleCommandHandler, ExpectedResponseEnum, ProtocolMessage}
+import obakalov.redis.actors.client.{CommandDetectTrait, ExpectedResponseEnum, ProtocolGenerator, ProtocolMessage, SimpleCommandHandler}
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
@@ -17,7 +17,13 @@ object PingLogic extends CommandDetectTrait with SimpleCommandHandler {
       queue: SourceQueueWithComplete[ByteString],
       log: org.slf4j.Logger
   ): ExpectedResponseEnum = {
-    queue.offer(ByteString("+PONG\r\n"))
+    command.multiBulkMessage match {
+      case Some(multi) if multi.length > 1 =>
+        val messageBytes = multi(1).bulkMessage.getOrElse(Array.emptyByteArray)
+        queue.offer(ProtocolGenerator.createBulkString(messageBytes))
+      case _ =>
+        queue.offer(ByteString("+PONG\r\n"))
+    }
     ExpectedResponseEnum.NoResponse
   }
 }
