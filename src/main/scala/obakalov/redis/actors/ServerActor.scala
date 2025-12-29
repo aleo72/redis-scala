@@ -36,7 +36,7 @@ object ServerActor {
         .queue[ByteString](bufferSize = 1024, overflowStrategy = org.apache.pekko.stream.OverflowStrategy.dropHead)
         .preMaterialize()
 
-      val handler = context.spawn(ClientActor.apply(queue, dbActor, replicationActor), nameClient)
+      val handler = context.spawn(ClientActor.apply(cmdArgConfig, queue, dbActor, replicationActor), nameClient)
 
       val sink = Sink.foreach[ByteString] { data =>
         handler ! ClientActor.Command.ReceivedData(data)

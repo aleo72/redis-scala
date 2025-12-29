@@ -1,5 +1,6 @@
 package obakalov.redis.actors.client.logic
 
+import obakalov.redis.CmdArgConfig
 import obakalov.redis.actors.client.{ExpectedResponseEnum, ProtocolMessage}
 import obakalov.redis.actors.ClientActor
 import obakalov.redis.actors.DatabaseActor
@@ -9,6 +10,7 @@ import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
 
 case class CommandContext(
+                           cmdArgConfig: CmdArgConfig,
     msg: ProtocolMessage,
     queue: SourceQueueWithComplete[ByteString],
     databaseActor: ActorRef[DatabaseActor.Command],

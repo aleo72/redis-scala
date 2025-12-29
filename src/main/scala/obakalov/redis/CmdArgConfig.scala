@@ -8,7 +8,9 @@ case class CmdArgConfig(
     dbfilename: Option[String] = None,
     countDatabases: Int = 16,
     replicaof: Option[String] = None
-)
+) {
+  def isSlave: Boolean = replicaof.isDefined
+}
 
 object CmdArgConfigParser {
 

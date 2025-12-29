@@ -16,6 +16,11 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
 
   override def handle( cc: CommandContext ): ExpectedResponseEnum = {
     logCommand(cc)
+    val expectedResponseEnum =
+      if(cc.cmdArgConfig.isSlave)
+        ExpectedResponseEnum.NoResponse
+      else
+        ExpectedResponseEnum.ExpectedResponse
     // Extract the key and value from the command
     cc.msg.multiBulkMessage match {
       case Some(Seq(_, keyM, valueM)) =>
@@ -24,7 +29,7 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
         cc.log.info(s"Sending SET command to a database actor (${cc.databaseActor}) with a key: $key and value: $value, with replyTo: ${cc.replyTo}")
         cc.databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None, replyTo = cc.replyTo)
         cc.replicationActor ! ReplicationActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None)
-        ExpectedResponseEnum.ExpectedResponse
+        expectedResponseEnum
       case Some(Seq(_, keyM, valueM, paramM, paramValueM)) if validParamsPXEX.contains(paramM.bulkMessageString.toUpperCase) =>
         val key = keyM.bulkMessageString
         val value = valueM.bulkMessageString
@@ -45,7 +50,7 @@ object SetLogic extends CommandDetectTrait with CommandHandler {
           case pxOpt @ Some(pxValue) if pxValue >= 0 =>
             cc.databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = pxOpt, replyTo = cc.replyTo)
             cc.replicationActor ! ReplicationActor.Command.Set(key = key, value = valueM.bulkMessage, expired = pxOpt)
-            ExpectedResponseEnum.ExpectedResponse
+            expectedResponseEnum
           case Some(pxValue) if pxValue < 0 =>
             cc.queue.offer(ByteString("-ERR value for 'px' or 'ex' parameter must be a non-negative integer\r\n"))
             ExpectedResponseEnum.NoResponse
