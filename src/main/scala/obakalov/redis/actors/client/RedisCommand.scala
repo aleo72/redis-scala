@@ -2,25 +2,16 @@ package obakalov.redis.actors.client
 
 import obakalov.redis.actors.client.logic.*
 
-sealed trait RedisCommand:
-  def logic: CommandDetectTrait
 
-object RedisCommand:
-  val values: Array[RedisCommand] = RedisDatabaseCommand.values ++
-    RedisSimpleCommand.values ++
-    RedisReplicationCommand.values
+enum RedisCommand(val handler: CommandHandler & CommandDetectTrait):
+  case SET extends RedisCommand(SetLogic)
+  case GET extends RedisCommand(GetLogic)
+  case CONFIG extends RedisCommand(ConfigLogic)
+  case KEYS extends RedisCommand(KeysLogic)
+  case PING extends RedisCommand(PingLogic)
+  case ECHO extends RedisCommand(EchoLogic)
+  case INFO extends RedisCommand(ReplicationInfoLogic)
+  case REPLCONF extends RedisCommand(ReplConfLogic)
+  case PSYNC extends RedisCommand(PsyncLogic)
 
-enum RedisDatabaseCommand(val logic: CommandDetectTrait & DatabaseCommandHandler) extends RedisCommand:
-  case Set extends RedisDatabaseCommand(SetLogic)
-  case Get extends RedisDatabaseCommand(GetLogic)
-  case Config extends RedisDatabaseCommand(ConfigLogic)
-  case Keys extends RedisDatabaseCommand(KeysLogic)
-
-enum RedisSimpleCommand(val logic: CommandDetectTrait & SimpleCommandHandler) extends RedisCommand:
-  case PING extends RedisSimpleCommand(PingLogic)
-  case ECHO extends RedisSimpleCommand(EchoLogic)
-
-enum RedisReplicationCommand(val logic: CommandDetectTrait & ReplicationCommandHandler) extends RedisCommand:
-  case INFO extends RedisReplicationCommand(ReplicationInfoLogic)
-  case REPLCONF extends RedisReplicationCommand(ReplConfLogic)
-  case PSYNC extends RedisReplicationCommand(PsyncLogic)
+  def commandName: String = handler.commandName

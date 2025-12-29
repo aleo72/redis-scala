@@ -1,5 +1,6 @@
-package obakalov.redis.actors.client
+package obakalov.redis.actors.client.logic
 
+import obakalov.redis.actors.client.ProtocolMessage
 import obakalov.redis.actors.client.logic.PingLogic.commandName
 
 trait CommandDetectTrait {

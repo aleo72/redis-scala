@@ -2,6 +2,7 @@ package obakalov.redis.actors
 
 import obakalov.redis.actors.client.*
 import obakalov.redis.actors.client.ExpectedResponseEnum.*
+import obakalov.redis.actors.client.logic.CommandContext
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors, StashBuffer}
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
@@ -85,18 +86,23 @@ object ClientActor {
       ctx: ActorContext[ComandOrResponse],
       buffer: StashBuffer[ComandOrResponse]
   ): Behavior[ComandOrResponse] = {
-    RedisCommand.values.find(_.logic.canHandle(msg)) match {
+    RedisCommand.values.find(_.handler.canHandle(msg)) match {
       case None =>
         ctx.log.error(s"Unknown command: $msg")
         // Optionally send an error response back to the client
         queue.offer(ByteString(s"-ERR unknown command '${msg.statusCodeString}'\r\n"))
         Behaviors.same
       case Some(redisCommand) =>
-        val areYourWaitingResponse: ExpectedResponseEnum = redisCommand match {
-          case simpleCommand: RedisSimpleCommand           => simpleCommand.logic.handle(msg, queue, ctx.log)
-          case databaseCommand: RedisDatabaseCommand       => databaseCommand.logic.handle(msg, queue, dbActor, ctx.self, ctx.log)
-          case replicationCommand: RedisReplicationCommand => replicationCommand.logic.handle(msg, queue, dbActor, replicationActor, ctx.self, ctx.log)
-        }
+        val areYourWaitingResponse: ExpectedResponseEnum = redisCommand.handler.handle(
+          CommandContext(
+            msg = msg,
+            queue = queue,
+            databaseActor = dbActor,
+            replicationActor = replicationActor,
+            replyTo = ctx.self,
+            log = ctx.log
+          )
+        )
         areYourWaitingResponse match {
           case ExpectedResponse =>
             ctx.log.info("Waiting for response from database actor.")

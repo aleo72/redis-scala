@@ -1,33 +1,27 @@
 package obakalov.redis.actors.client.logic
 
-import obakalov.redis.actors.client.{CommandDetectTrait, DatabaseCommandHandler, ExpectedResponseEnum, ProtocolMessage}
+import obakalov.redis.actors.client.{ExpectedResponseEnum, ProtocolMessage}
+import obakalov.redis.actors.{ClientActor, DatabaseActor}
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.stream.scaladsl.SourceQueueWithComplete
 import org.apache.pekko.util.ByteString
-import obakalov.redis.actors.{ClientActor, DatabaseActor}
 
 import java.io.OutputStream
 
-object SetLogic extends CommandDetectTrait with DatabaseCommandHandler {
+object SetLogic extends CommandDetectTrait with CommandHandler {
 
   override def commandName: String = "SET"
 
   val validParamsPXEX = Set("PX", "EX")
 
-  override def handle(
-      command: ProtocolMessage,
-      queue: SourceQueueWithComplete[ByteString],
-      databaseActor: ActorRef[DatabaseActor.Command],
-      replyTo: ActorRef[ClientActor.ExpectingAnswers],
-      log: org.slf4j.Logger
-  ): ExpectedResponseEnum = {
+  override def handle( cc: CommandContext ): ExpectedResponseEnum = {
     // Extract the key and value from the command
-    command.multiBulkMessage match {
+    cc.msg.multiBulkMessage match {
       case Some(Seq(_, keyM, valueM)) =>
         val key = keyM.bulkMessageString
         val value = valueM.bulkMessageString
-        log.info(s"Sending SET command to database actor ($databaseActor) with key: $key and value: $value, with replyTo: $replyTo")
-        databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None, replyTo = replyTo)
+        cc.log.info(s"Sending SET command to a database actor (${cc.databaseActor}) with a key: $key and value: $value, with replyTo: ${cc.replyTo}")
+        cc.databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = None, replyTo = cc.replyTo)
         ExpectedResponseEnum.ExpectedResponse
       case Some(Seq(_, keyM, valueM, paramM, paramValueM)) if validParamsPXEX.contains(paramM.bulkMessageString.toUpperCase) =>
         val key = keyM.bulkMessageString
@@ -35,8 +29,8 @@ object SetLogic extends CommandDetectTrait with DatabaseCommandHandler {
         val param = paramM.bulkMessageString.toUpperCase
         val pxValueString = paramValueM.bulkMessageString
 
-        log.info(
-          s"Sending SET ($param) command to database actor ($databaseActor) with key: $key, value: $value, param: $param, pxValue: $pxValueString, with replyTo: $replyTo"
+        cc.log.info(
+          s"Sending SET ($param) command to database actor (${cc.databaseActor}) with key: $key, value: $value, param: $param, pxValue: $pxValueString, with replyTo: ${cc.replyTo}"
         )
 
         val maybePxValue: Option[Long] =
@@ -47,17 +41,17 @@ object SetLogic extends CommandDetectTrait with DatabaseCommandHandler {
           }
         maybePxValue match {
           case pxOpt @ Some(pxValue) if pxValue >= 0 =>
-            databaseActor ! DatabaseActor.Command.Set(key, valueM.bulkMessage, pxOpt, replyTo)
+            cc.databaseActor ! DatabaseActor.Command.Set(key = key, value = valueM.bulkMessage, expired = pxOpt, replyTo = cc.replyTo)
             ExpectedResponseEnum.ExpectedResponse
           case Some(pxValue) if pxValue < 0 =>
-            queue.offer(ByteString("-ERR value for 'px' or 'ex' parameter must be a non-negative integer\r\n"))
+            cc.queue.offer(ByteString("-ERR value for 'px' or 'ex' parameter must be a non-negative integer\r\n"))
             ExpectedResponseEnum.NoResponse
           case _ =>
-            queue.offer(ByteString("-ERR invalid value for 'px' or 'ex' parameter\r\n"))
+            cc.queue.offer(ByteString("-ERR invalid value for 'px' or 'ex' parameter\r\n"))
             ExpectedResponseEnum.NoResponse
         }
       case _ =>
-        queue.offer(ByteString("-ERR wrong number of arguments for 'set' command\r\n"))
+        cc.queue.offer(ByteString("-ERR wrong number of arguments for 'set' command\r\n"))
         ExpectedResponseEnum.NoResponse
     }
   }
