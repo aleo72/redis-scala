@@ -11,7 +11,7 @@ object PsyncLogic extends CommandDetectTrait with CommandHandler {
   override def commandName: String = "PSYNC"
 
   override def handle(cc: CommandContext): ExpectedResponseEnum = {
-    cc.log.info(s"Sending $commandName command ${cc.msg} to a replication actor (${cc.replicationActor}) with replyTo: ${cc.replyTo}")
+    logCommand(cc)
     // Send the PSYNC command to the replication actor
     val messages: Seq[String] = cc.msg.multiBulkMessage.get.drop(1).map(_.bulkMessageString)
     val (runId, offset) = messages match {

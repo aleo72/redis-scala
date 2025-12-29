@@ -13,6 +13,7 @@ object EchoLogic extends CommandDetectTrait with CommandHandler {
   override def commandName: String = "ECHO"
 
   override def handle(cc: CommandContext): ExpectedResponseEnum = {
+    logCommand(cc)
     // Extract the message to echo from the command. Redis ECHO expects exactly one argument.
     val messageBytes = cc.msg.multiBulkMessage match {
       case Some(multi) if multi.length > 1 =>

@@ -11,7 +11,8 @@ object KeysLogic extends CommandDetectTrait with CommandHandler {
 
   override def commandName: String = "KEYS"
 
-  override def handle(cc: CommandContext): ExpectedResponseEnum =
+  override def handle(cc: CommandContext): ExpectedResponseEnum = {
+    logCommand(cc)
     cc.msg.multiBulkMessage match {
       case Some(multiBulk) if multiBulk.length == 2 => // KEYS pattern
         val pattern = multiBulk(1).bulkMessageString // The pattern is the second element
@@ -24,4 +25,5 @@ object KeysLogic extends CommandDetectTrait with CommandHandler {
         cc.queue.offer(ByteString("-ERR wrong number of arguments for 'keys' command\r\n"))
         ExpectedResponseEnum.NoResponse
     }
+  }
 }

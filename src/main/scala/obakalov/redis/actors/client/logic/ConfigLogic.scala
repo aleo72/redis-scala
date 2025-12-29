@@ -11,7 +11,8 @@ object ConfigLogic extends CommandDetectTrait with CommandHandler {
 
   override def commandName: String = "CONFIG"
 
-  override def handle(cc: CommandContext): ExpectedResponseEnum =
+  override def handle(cc: CommandContext): ExpectedResponseEnum = {
+    logCommand(cc)
     cc.msg.multiBulkMessage match {
       case Some(multiBulk) if multiBulk.length == 3 && multiBulk(1).bulkMessageString.equalsIgnoreCase("GET") =>
         val action = multiBulk(1).bulkMessageString
@@ -25,4 +26,5 @@ object ConfigLogic extends CommandDetectTrait with CommandHandler {
         cc.queue.offer(ByteString("-ERR wrong number of arguments for 'get' command\r\n"))
         ExpectedResponseEnum.NoResponse
     }
+  }
 }

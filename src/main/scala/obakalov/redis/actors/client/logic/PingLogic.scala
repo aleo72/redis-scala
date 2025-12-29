@@ -13,6 +13,7 @@ object PingLogic extends CommandDetectTrait with CommandHandler {
   override val commandName = "PING"
 
   def handle(cc: CommandContext): ExpectedResponseEnum = {
+    logCommand(cc)
     cc.msg.multiBulkMessage match {
       case Some(multi) if multi.length > 1 =>
         val messageBytes = multi(1).bulkMessage.getOrElse(Array.emptyByteArray)

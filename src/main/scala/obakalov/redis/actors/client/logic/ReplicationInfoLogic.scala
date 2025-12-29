@@ -15,7 +15,7 @@ object ReplicationInfoLogic extends CommandDetectTrait with CommandHandler {
     command.multiBulkMessage.get(1).bulkMessageString == "replication"
 
   override def handle(cc: CommandContext): ExpectedResponseEnum = {
-    cc.log.info(s"Sending $commandName command to a replication actor (${cc.replicationActor}) with replyTo: ${cc.replyTo}")
+    logCommand(cc)
     // Send the INFO command to the replication actor
     cc.replicationActor ! ReplicationActor.Command.Info(cc.replyTo)
     ExpectedResponseEnum.ExpectedResponse

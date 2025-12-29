@@ -19,6 +19,7 @@ object ReplicationActor {
     case Psync(replyTo: ActorRef[ClientActor.ExpectingAnswers], runId: String, offset: Long)
     case InitiateHandshake
     case WrappedConnectionResponse(response: PersistentConnectionActor.Response)
+    case Set(key: String, value: Option[Array[Byte]], expired: Option[Long])
 
   enum State:
     case Idle
@@ -43,12 +44,13 @@ object ReplicationActor {
 
   private def masterLogic(config: ReplicationConfig, dbActor: ActorRef[DatabaseActor.Command]): Behavior[ReplicationActorBehaviorType] = Behaviors.setup {
     context =>
-      context.log.info("Starting master replication logic")
+      context.log.info(s"Starting master replication logic: config: ${config}")
       // Master-specific replication logic would go here
       Behaviors.receiveMessage {
         case msg: Command.Info     => handleInfo(config, msg)
         case cmd: Command.ReplConf => handleReplConf(config, cmd, dbActor)
         case psync: Command.Psync  => handlePsync(config, psync, dbActor)
+        case set: Command.Set      => masterLogicHandleSet(config, set)
         case msg                   =>
           context.log.warn(s"Master received unexpected message: $msg")
           Behaviors.unhandled
@@ -69,6 +71,14 @@ object ReplicationActor {
       context.self ! Command.InitiateHandshake
       handleInitiateHandshake(config, connectionActor, responseAdapter, State.HandshakingInit)
   }
+
+  private def masterLogicHandleSet(config: ReplicationConfig, msg: Command.Set): Behavior[ReplicationActorBehaviorType] =
+    Behaviors.setup { context =>
+      context.log.info(s"Master received SET command for key: ${msg.key}")
+      // In a real implementation, we would propagate this SET command to connected slaves
+      // For now, just log it
+      Behaviors.same[ReplicationActorBehaviorType]
+    }
 
   def handleInfo(
       config: ReplicationConfig,
