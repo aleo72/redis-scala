@@ -22,4 +22,11 @@ object ProtocolGenerator {
   def simpleString(data: String): String = {
     s"+$data\r\n"
   }
+
+  def generateRespArray(args: ByteString*): ByteString = {
+    val header = ByteString(s"*${args.length}\r\n")
+    args.foldLeft(header) { (acc, arg) =>
+      acc ++ ByteString(s"$$${arg.length}\r\n") ++ arg ++ ByteString("\r\n")
+    }
+  }
 }

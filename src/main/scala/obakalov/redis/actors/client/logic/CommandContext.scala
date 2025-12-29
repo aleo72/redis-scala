@@ -13,7 +13,7 @@ case class CommandContext(
     queue: SourceQueueWithComplete[ByteString],
     databaseActor: ActorRef[DatabaseActor.Command],
     replicationActor: ActorRef[ReplicationActor.Command],
-    replyTo: ActorRef[ClientActor.ExpectingAnswers],
+    replyTo: ActorRef[ClientActor.ComandOrResponse],
     log: org.slf4j.Logger
 )
 

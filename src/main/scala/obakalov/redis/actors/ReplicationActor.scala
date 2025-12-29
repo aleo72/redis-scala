@@ -14,9 +14,9 @@ object ReplicationActor {
   type ContextType = ActorContext[ReplicationActorBehaviorType]
 
   enum Command:
-    case Info(replyTo: ActorRef[ClientActor.ExpectingAnswers])
-    case ReplConf(replyTo: ActorRef[ClientActor.ExpectingAnswers], params: Map[String, String])
-    case Psync(replyTo: ActorRef[ClientActor.ExpectingAnswers], runId: String, offset: Long)
+    case Info(replyTo: ActorRef[ClientActor.ComandOrResponse])
+    case ReplConf(replyTo: ActorRef[ClientActor.ComandOrResponse], params: Map[String, String])
+    case Psync(replyTo: ActorRef[ClientActor.ComandOrResponse], runId: String, offset: Long)
     case InitiateHandshake
     case WrappedConnectionResponse(response: PersistentConnectionActor.Response)
     case Set(key: String, value: Option[Array[Byte]], expired: Option[Long])
@@ -75,8 +75,22 @@ object ReplicationActor {
   private def masterLogicHandleSet(config: ReplicationConfig, msg: Command.Set): Behavior[ReplicationActorBehaviorType] =
     Behaviors.setup { context =>
       context.log.info(s"Master received SET command for key: ${msg.key}")
-      // In a real implementation, we would propagate this SET command to connected slaves
-      // For now, just log it
+
+      val cmdArgs = Seq(
+        ByteString("SET"),
+        ByteString(msg.key),
+        ByteString(msg.value.getOrElse(Array.emptyByteArray)),
+        msg.expired.map(_ => ByteString("PX")).getOrElse(ByteString.empty),
+        msg.expired.map(px => ByteString(px.toString)).getOrElse(ByteString.empty)
+      ).filter(_.nonEmpty)
+
+      val encodedCommand = ProtocolGenerator.generateRespArray(cmdArgs*)
+
+      config.replicaActors.foreach { replica =>
+        context.log.info(s"Propagating SET command to replica: $replica")
+        replica ! ClientActor.Command.SendToClient(encodedCommand)
+      }
+
       Behaviors.same[ReplicationActorBehaviorType]
     }
 
@@ -125,7 +139,7 @@ object ReplicationActor {
       val rdbBytes = java.util.Base64.getDecoder.decode("UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==")
       msg.replyTo ! ClientActor.ExpectingAnswers.DirectValue(rdbBytes)
       
-      masterLogic(config, dbActor)
+      masterLogic(config.copy(replicaActors = (config.replicaActors :+ msg.replyTo).distinct), dbActor)
     }
 
   def replicationActive(
@@ -226,7 +240,8 @@ object ReplicationActor {
       replicationBacklogHistlen: Option[Long] = None, // Optional history length of the replication backlog
       masterHost: Option[String] = None, // Optional master host for slave
       masterPort: Option[Int] = None, // Optional master port for slave
-      selfPort: Option[Int] = None // Optional self port for slave (if applicable)
+      selfPort: Option[Int] = None, // Optional self port for slave (if applicable)
+      replicaActors: Seq[ActorRef[ClientActor.ComandOrResponse]] = Seq.empty
   ) {
 
     def isMaster: Boolean = role == "master"
